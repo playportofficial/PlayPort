@@ -70,7 +70,11 @@ export default function CartScreen() {
   const delivery = useDeliveryQuote();
   const scheduledStartAt = useAppStore((s) => s.scheduledStartAt);
   const setScheduledStartAt = useAppStore((s) => s.setScheduledStartAt);
-  const [pickedMode, setSchedMode] = useState<'asap' | 'scheduled'>('asap');
+  // Open on whatever is really saved — a slot picked earlier means Schedule, not ASAP.
+  const [pickedMode, setSchedMode] = useState<'asap' | 'scheduled'>(() => (scheduledStartAt ? 'scheduled' : 'asap'));
+  useEffect(() => {
+    if (scheduledStartAt && !isValidScheduledStart(scheduledStartAt, new Date())) setScheduledStartAt(null);
+  }, [scheduledStartAt, setScheduledStartAt]);
   const now = useMemo(() => new Date(), []);
   const open = isServiceOpen(now);
   const notBefore = useOrderNotBefore();
