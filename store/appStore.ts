@@ -862,7 +862,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const payment = paymentMethods.find((p) => p.id === selectedPaymentMethodId);
     const isCod = payment?.type === 'cod';
-    if (isCod && scheduledOk) {
+    if (isCod && scheduledStartAt) {
       return { ok: false, error: 'Cash on delivery is only for ASAP orders. Pay online to schedule a later slot.' };
     }
     const totals = calcCartTotals(cart, quote?.fee ?? currentDeliveryFee(get()));

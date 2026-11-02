@@ -494,7 +494,7 @@ export const createBooking = onCall({ region: REGION }, async (request) => {
     throw new HttpsError('invalid-argument', 'Bookings open up to 30 days ahead');
   }
   // Cash on delivery is ASAP-only (start ≈ now + 45 min); scheduled orders pay online.
-  if (isCod && startAt.getTime() > now + 90 * 60 * 1000) {
+  if (isCod && startAt.getTime() > now + 60 * 60 * 1000) {
     throw new HttpsError(
       'failed-precondition',
       'Cash on delivery is only for ASAP orders. Pay online to schedule a later slot.'

@@ -175,12 +175,17 @@ export default function CheckoutScreen() {
             <View style={styles.timingRow}>
               <View style={{ flex: 1 }}>
                 <View style={styles.timingHeader}>
-                  <Text style={styles.timingLabel}>Express dropoff</Text>
+                  <Text style={styles.timingLabel}>{scheduledStartAt ? 'Scheduled slot' : 'Express dropoff'}</Text>
                   {timingOk ? <Badge label="20–35 MINS" /> : null}
                 </View>
                 {timingOk ? (
                   <Text style={styles.timingValue}>
                     Rider heads out after payment — live minutes on Track once accepted.
+                  </Text>
+                ) : scheduledStartAt ? (
+                  <Text style={styles.timingWarn}>
+                    Your chosen slot is too soon or has passed. Go back to the cart and pick a new time, or switch
+                    to ASAP.
                   </Text>
                 ) : notBefore ? (
                   <Text style={styles.timingWarn}>

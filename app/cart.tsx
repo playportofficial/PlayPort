@@ -72,9 +72,6 @@ export default function CartScreen() {
   const setScheduledStartAt = useAppStore((s) => s.setScheduledStartAt);
   // Open on whatever is really saved — a slot picked earlier means Schedule, not ASAP.
   const [pickedMode, setSchedMode] = useState<'asap' | 'scheduled'>(() => (scheduledStartAt ? 'scheduled' : 'asap'));
-  useEffect(() => {
-    if (scheduledStartAt && !isValidScheduledStart(scheduledStartAt, new Date())) setScheduledStartAt(null);
-  }, [scheduledStartAt, setScheduledStartAt]);
   const now = useMemo(() => new Date(), []);
   const open = isServiceOpen(now);
   const notBefore = useOrderNotBefore();
@@ -190,6 +187,10 @@ export default function CartScreen() {
           {scheduledValid && scheduledStartAt ? (
             <Text style={styles.scheduleTime}>
               {formatSlot(scheduledStartAt, now)} · {formatWindow(scheduledStartAt, maxHours)} ({maxHours}h)
+            </Text>
+          ) : scheduledStartAt && !isValidScheduledStart(scheduledStartAt, new Date()) ? (
+            <Text style={styles.scheduleWarn}>
+              Your saved slot is too soon or has passed — pick a new time, or tap ASAP.
             </Text>
           ) : beforeLaunch && notBefore ? (
             <Text style={styles.scheduleWarn}>

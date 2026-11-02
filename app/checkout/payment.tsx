@@ -19,7 +19,6 @@ import { useResponsive } from '@/hooks/useResponsive';
 import { useAppStore, useCartTotals } from '@/store/appStore';
 import { ensureLoggedIn } from '@/utils/authGate';
 import { formatINR } from '@/utils/format';
-import { isValidScheduledStart } from '@/utils/serviceHours';
 import type { PaymentMethodType } from '@/types';
 
 const PAY_ICONS: Record<PaymentMethodType, keyof typeof Ionicons.glyphMap> = {
@@ -50,7 +49,8 @@ export default function PaymentScreen() {
   const [termsAccepted, setTermsAccepted] = useState(false);
   const orderingPaused = useCatalogStore((s) => s.orderingPaused);
   const scheduledStartAt = useAppStore((s) => s.scheduledStartAt);
-  const scheduledOrder = isValidScheduledStart(scheduledStartAt, new Date());
+  // Any picked slot is a scheduled order — even one that's now too close (it must be re-picked, never turned into ASAP).
+  const scheduledOrder = Boolean(scheduledStartAt);
 
   useEffect(() => {
     if (!scheduledOrder) return;
