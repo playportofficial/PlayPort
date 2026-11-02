@@ -27,7 +27,7 @@ import { gateCartAdd } from '@/utils/authGate';
 import { formatINR } from '@/utils/format';
 import { isValidScheduledStart } from '@/utils/serviceHours';
 import { firstDisplayableImage } from '@/utils/images';
-import { formatLaunchDay, upcomingLaunch } from '@/utils/launch';
+import { formatLaunchDay, unitBookableFor, upcomingLaunch } from '@/utils/launch';
 import { productForStart, upcomingPriceChange } from '@/utils/priceChange';
 import {
   addonsTotal,
@@ -126,7 +126,7 @@ export default function ProductDetailScreen() {
     );
   }
 
-  const productUnits = units.filter((u) => u.productId === product?.id && u.status === 'available');
+  const productUnits = units.filter((u) => u.productId === product?.id && unitBookableFor(u, priceStart));
   // Unit choice only matters when units actually differ (installed games).
   // Otherwise the system auto-assigns a free kit — no picker noise.
   const unitsHaveGames = productUnits.some((u) => (u.games ?? []).length > 0);

@@ -1,5 +1,18 @@
-import type { Experience, Product } from '@/types';
-import { launchStart } from '@/utils/serviceHours';
+import type { Experience, InventoryUnit, Product } from '@/types';
+import { asapStart, launchStart } from '@/utils/serviceHours';
+
+/** Unit can be booked for a rental starting at `startIso` (null = ASAP). */
+export function unitBookableFor(
+  unit: Pick<InventoryUnit, 'status' | 'availableFrom'>,
+  startIso: string | null | undefined,
+  now = new Date()
+): boolean {
+  if (unit.status !== 'available') return false;
+  const from = launchStart(unit.availableFrom);
+  if (!from) return true;
+  const start = startIso ? new Date(startIso) : asapStart(now);
+  return Number.isFinite(start.getTime()) && start.getTime() >= from.getTime();
+}
 
 const launchDayFmt = new Intl.DateTimeFormat('en-IN', {
   timeZone: 'Asia/Kolkata',

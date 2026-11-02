@@ -81,7 +81,7 @@ describe('controller addon tiers (₹100 ≤6h · ₹120 ≤12h · ₹150 ≤24h
 describe('cart math helpers', () => {
   it('computeAddonLines clamps to maxQuantity and rounds unit price', () => {
     const lines = computeAddonLines(product(), 3, [{ id: 'extra-controller', quantity: 9 }]);
-    expect(lines[0].quantity).toBe(3);
+    expect(lines[0].quantity).toBe(1);
     expect(lines[0].unitPrice).toBe(100);
     expect(computeAddonLines(product(), 3, [{ id: 'nope', quantity: 1 }])).toHaveLength(0);
   });

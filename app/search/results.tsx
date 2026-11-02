@@ -13,6 +13,7 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { colors, fonts, radii, shadows, spacing, typeScale } from '@/constants/theme';
 import { useResponsive } from '@/hooks/useResponsive';
 import { useAppStore } from '@/store/appStore';
+import { unitBookableFor } from '@/utils/launch';
 import { useCatalogStore } from '@/store/catalogStore';
 import { gateCartAdd } from '@/utils/authGate';
 import type { CardSelection } from '@/components/products/ProductCard';
@@ -27,6 +28,7 @@ export default function SearchResultsScreen() {
   const addProductToCart = useAppStore((s) => s.addProductToCart);
   const updateCartQuantity = useAppStore((s) => s.updateCartQuantity);
   const cart = useAppStore((s) => s.cart);
+  const scheduledStartAt = useAppStore((s) => s.scheduledStartAt);
   const products = useCatalogStore((s) => s.products);
   const units = useCatalogStore((s) => s.units);
 
@@ -160,7 +162,9 @@ export default function SearchResultsScreen() {
                   key={product.id}
                   product={product}
                   compact={productColumns === 1}
-                  units={units.filter((unit) => unit.productId === product.id && unit.status === 'available')}
+                  units={units.filter(
+                    (unit) => unit.productId === product.id && unitBookableFor(unit, scheduledStartAt)
+                  )}
                   quantityFor={(selection) => lineFor(product.id, selection)?.quantity ?? 0}
                   onPress={() => router.push(`/product/${product.id}`)}
                   onAdd={(selection) => addKit(product.id, selection)}

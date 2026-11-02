@@ -21,14 +21,7 @@ interface Props {
  * Extra-controller row with a live pricing breakdown:
  * per-hour plans show ₹/hr × hours, package plans show the flat rate.
  */
-export function ControllerAddonRow({
-  addon,
-  productName,
-  hours,
-  quantity,
-  onIncrement,
-  onDecrement,
-}: Props) {
+export function ControllerAddonRow({ addon, productName, hours, quantity, onIncrement, onDecrement }: Props) {
   const { pricing } = addon;
   const unitPrice = priceForAddon(addon, hours, 1);
   const tiers = (pricing.tiers ?? [])
@@ -45,66 +38,76 @@ export function ControllerAddonRow({
   const modeLabel = isFlat ? 'FLAT RATE' : 'PER HOUR';
 
   return (
-    <View style={styles.card}>
-      <View style={styles.topRow}>
-        <View style={styles.iconWrap}>
-          <Ionicons name="game-controller-outline" size={18} color={colors.playportOrange} />
-        </View>
-        <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-          {productName ? (
-            <Text style={styles.product} numberOfLines={1}>
-              {productName}
-            </Text>
-          ) : null}
-          <View style={styles.nameRow}>
-            <Text style={styles.name} numberOfLines={1}>
-              {addon.name}
-            </Text>
-            <View style={[styles.modeChip, isFlat && styles.modeChipFlat]}>
-              <Text style={[styles.modeText, isFlat && styles.modeTextFlat]}>{modeLabel}</Text>
-            </View>
+    <View style={styles.wrap}>
+      <View style={styles.card}>
+        <View style={styles.topRow}>
+          <View style={styles.iconWrap}>
+            <Ionicons name="game-controller-outline" size={18} color={colors.playportOrange} />
           </View>
-          <Text style={styles.breakdown}>{breakdown}</Text>
+          <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+            {productName ? (
+              <Text style={styles.product} numberOfLines={1}>
+                {productName}
+              </Text>
+            ) : null}
+            <View style={styles.nameRow}>
+              <Text style={styles.name} numberOfLines={1}>
+                {addon.name}
+              </Text>
+              <View style={[styles.modeChip, isFlat && styles.modeChipFlat]}>
+                <Text style={[styles.modeText, isFlat && styles.modeTextFlat]}>{modeLabel}</Text>
+              </View>
+            </View>
+            <Text style={styles.breakdown}>{breakdown}</Text>
+          </View>
+        </View>
+
+        <View style={styles.bottomRow}>
+          <Text style={styles.totalLabel}>
+            {quantity > 0 ? (
+              <>
+                {quantity} × {formatINR(unitPrice)} ={' '}
+                <Text style={styles.totalValue}>{formatINR(unitPrice * quantity)}</Text>
+              </>
+            ) : (
+              <>
+                <Text style={styles.totalValue}>{formatINR(unitPrice)}</Text> each
+                {!isPureHourly && !isFlat ? ' · prorated' : ''}
+              </>
+            )}
+          </Text>
+
+          <View style={styles.stepper}>
+            <PressableScale
+              accessibilityLabel={`Remove one ${addon.name}`}
+              onPress={onDecrement}
+              scaleTo={0.88}
+              hitSlop={6}
+              style={[styles.stepBtn, quantity === 0 && styles.stepBtnDim]}
+            >
+              <Ionicons name="remove" size={15} color={quantity === 0 ? colors.mutedText : colors.baseBlack} />
+            </PressableScale>
+            <Text style={styles.stepValue}>{quantity}</Text>
+            <PressableScale
+              accessibilityLabel={`Add one ${addon.name}`}
+              onPress={onIncrement}
+              scaleTo={0.88}
+              hitSlop={6}
+              style={[styles.stepBtn, styles.stepBtnAdd]}
+            >
+              <Ionicons name="add" size={15} color={colors.baseBlack} />
+            </PressableScale>
+          </View>
         </View>
       </View>
-
-      <View style={styles.bottomRow}>
-        <Text style={styles.totalLabel}>
-          {quantity > 0 ? (
-            <>
-              {quantity} × {formatINR(unitPrice)} ={' '}
-              <Text style={styles.totalValue}>{formatINR(unitPrice * quantity)}</Text>
-            </>
-          ) : (
-            <>
-              <Text style={styles.totalValue}>{formatINR(unitPrice)}</Text> each
-              {!isPureHourly && !isFlat ? ' · prorated' : ''}
-            </>
-          )}
-        </Text>
-
-        <View style={styles.stepper}>
-          <PressableScale
-            accessibilityLabel={`Remove one ${addon.name}`}
-            onPress={onDecrement}
-            scaleTo={0.88}
-            hitSlop={6}
-            style={[styles.stepBtn, quantity === 0 && styles.stepBtnDim]}
-          >
-            <Ionicons name="remove" size={15} color={quantity === 0 ? colors.mutedText : colors.baseBlack} />
-          </PressableScale>
-          <Text style={styles.stepValue}>{quantity}</Text>
-          <PressableScale
-            accessibilityLabel={`Add one ${addon.name}`}
-            onPress={onIncrement}
-            scaleTo={0.88}
-            hitSlop={6}
-            style={[styles.stepBtn, styles.stepBtnAdd]}
-          >
-            <Ionicons name="add" size={15} color={colors.baseBlack} />
-          </PressableScale>
+      {addon.maxQuantity === 1 ? (
+        <View style={styles.limitRow}>
+          <Ionicons name="information-circle-outline" size={14} color={colors.playportOrange} />
+          <Text style={styles.limitNote}>
+            Currently max 2 controllers per kit (1 included + 1 extra) — we’re running low on controllers.
+          </Text>
         </View>
-      </View>
+      ) : null}
     </View>
   );
 }
@@ -127,7 +130,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  nameRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
   product: {
     color: colors.mutedText,
     fontFamily: fonts.bodyMedium,
@@ -135,7 +143,12 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
     textTransform: 'uppercase',
   },
-  name: { color: colors.primaryText, fontFamily: fonts.headingMedium, fontSize: typeScale.body, flexShrink: 1 },
+  name: {
+    color: colors.primaryText,
+    fontFamily: fonts.headingMedium,
+    fontSize: typeScale.body,
+    flexShrink: 1,
+  },
   modeChip: {
     backgroundColor: colors.orangeTint,
     borderRadius: radii.full,
@@ -155,6 +168,20 @@ const styles = StyleSheet.create({
     fontFamily: fonts.bodyMedium,
     fontSize: typeScale.small,
     lineHeight: 18,
+  },
+  wrap: { gap: 8 },
+  limitRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+    paddingHorizontal: 4,
+  },
+  limitNote: {
+    flex: 1,
+    color: colors.secondaryText,
+    fontFamily: fonts.body,
+    fontSize: 12,
+    lineHeight: 17,
   },
   bottomRow: {
     flexDirection: 'row',

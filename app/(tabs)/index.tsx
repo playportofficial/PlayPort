@@ -12,6 +12,7 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { colors, fonts, layout, spacing, typeScale } from '@/constants/theme';
 import { useResponsive } from '@/hooks/useResponsive';
 import { useAppStore, useCartCount } from '@/store/appStore';
+import { unitBookableFor } from '@/utils/launch';
 import { useCatalogStore } from '@/store/catalogStore';
 import { useFeelStore } from '@/store/feelStore';
 import { useWishlistStore } from '@/store/wishlistStore';
@@ -28,6 +29,7 @@ export default function HomeScreen() {
   const addProductToCart = useAppStore((s) => s.addProductToCart);
   const updateCartQuantity = useAppStore((s) => s.updateCartQuantity);
   const cart = useAppStore((s) => s.cart);
+  const scheduledStartAt = useAppStore((s) => s.scheduledStartAt);
   const showToast = useFeelStore((s) => s.showToast);
   const products = useCatalogStore((s) => s.products);
   const units = useCatalogStore((s) => s.units);
@@ -76,7 +78,7 @@ export default function HomeScreen() {
       product={product}
       wished={wishlist.includes(product.id)}
       onToggleWishlist={() => toggleWishlist(product.id)}
-      units={units.filter((unit) => unit.productId === product.id && unit.status === 'available')}
+      units={units.filter((unit) => unit.productId === product.id && unitBookableFor(unit, scheduledStartAt))}
       quantityFor={(selection) => lineFor(product.id, selection)?.quantity ?? 0}
       onPress={() => router.push(`/product/${product.id}`)}
       onAdd={(selection) => addKit(product, selection)}

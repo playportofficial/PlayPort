@@ -236,6 +236,8 @@ export interface InventoryUnit {
   status: InventoryUnitStatus;
   /** Games installed on this physical unit. */
   games?: string[];
+  /** Not bookable for rentals starting before this IST day ("YYYY-MM-DD"), e.g. a launch-day console. */
+  availableFrom?: string;
   createdAt: string;
   updatedAt: string;
 }

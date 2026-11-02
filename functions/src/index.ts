@@ -13,6 +13,7 @@ import {
   expectedLineTotal,
   normalizeFnProduct,
   priceForAddon,
+  istDayStartMs,
   priceForHourly,
   productForStart,
   type FnCartItem,
@@ -354,6 +355,9 @@ async function pickUnitsForProduct(
   const picked: string[] = [];
   for (const doc of docs) {
     if (picked.length >= quantity) break;
+    // Launch-day consoles (e.g. GTA 6 units) can't go out before their date.
+    const from = istDayStartMs(doc.data().availableFrom);
+    if (from != null && startMs < from) continue;
     const busy = await unitHasOverlap(doc.id, startMs, endMs, now);
     if (!busy) picked.push(doc.id);
   }
@@ -1905,7 +1909,10 @@ export const checkAvailability = onCall({ region: REGION }, async (request) => {
     .where('hubId', '==', hubId)
     .where('status', '==', 'available')
     .get();
-  const totalUnits = stockSnap.size;
+  const totalUnits = stockSnap.docs.filter((d) => {
+    const from = istDayStartMs(d.data().availableFrom);
+    return from == null || startMs >= from;
+  }).length;
   try {
     const units = await pickUnitsForProduct(productId, hubId, quantity, startMs, endMs, now);
     return { ok: true, hubId, availableUnitIds: units, totalUnits };
