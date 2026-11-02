@@ -1,11 +1,11 @@
-import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
+import { createHmac, randomBytes, randomInt, timingSafeEqual } from 'crypto';
 import { initializeApp } from 'firebase-admin/app';
 import { FieldValue, getFirestore, type DocumentData, type DocumentReference } from 'firebase-admin/firestore';
 import { getMessaging } from 'firebase-admin/messaging';
 import { logger } from 'firebase-functions';
 import { onRequest } from 'firebase-functions/v2/https';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
-import { onDocumentCreated } from 'firebase-functions/v2/firestore';
+import { onDocumentCreated, onDocumentUpdated } from 'firebase-functions/v2/firestore';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { defineString } from 'firebase-functions/params';
 import {
@@ -18,7 +18,7 @@ import {
   type FnCartItem,
   type FnProduct,
 } from './rentalPricing';
-import { isDropoffInServiceArea, OUT_OF_AREA_ERROR, SERVICE_CENTER } from './serviceArea';
+import { isDropoffInServiceArea, OUT_OF_AREA_ERROR, SERVICE_CENTER, SERVICE_RADIUS_KM } from './serviceArea';
 import { DELIVERY_RATE_PER_KM, FREE_DELIVERY_KM, quoteDeliveryFee, TRIPS_PER_ORDER } from './delivery';
 
 initializeApp();
@@ -221,9 +221,89 @@ export const quoteDelivery = onCall({ region: REGION }, async (request) => {
   }
   const hubId = await resolveHubId(requestedHubId, uid);
   const quote = await deliveryQuoteFor(hubId, dropoff);
-  return { ...quote, hubId, freeKm: FREE_DELIVERY_KM, ratePerKm: DELIVERY_RATE_PER_KM, trips: TRIPS_PER_ORDER };
+  return {
+    ...quote,
+    hubId,
+    freeKm: FREE_DELIVERY_KM,
+    ratePerKm: DELIVERY_RATE_PER_KM,
+    trips: TRIPS_PER_ORDER,
+    serviceable: quote.km <= SERVICE_RADIUS_KM,
+  };
 });
 
+/** Admin → Settings defaults: rider travel out before a rental, pickup + return + cleaning after. */
+const DEFAULT_BUFFER_BEFORE_MIN = 40;
+const DEFAULT_BUFFER_AFTER_MIN = 40;
+/** Spare controllers shared by every kit (the one in each kit's box isn't counted). */
+const DEFAULT_CONTROLLER_STOCK = 10;
+let opsCache: { at: number; beforeMs: number; afterMs: number; controllerStock: number } | null = null;
+
+async function opsSettings() {
+  if (opsCache && Date.now() - opsCache.at < 60 * 1000) return opsCache;
+  const cfg = (await db.collection('config').doc('app').get()).data() ?? {};
+  const bounded = (value: unknown, fallback: number, max: number) => {
+    const n = Number(value);
+    return Number.isFinite(n) && n >= 0 && n <= max ? n : fallback;
+  };
+  opsCache = {
+    at: Date.now(),
+    beforeMs: bounded(cfg.bufferBeforeMinutes, DEFAULT_BUFFER_BEFORE_MIN, 240) * 60 * 1000,
+    afterMs: bounded(cfg.bufferAfterMinutes, DEFAULT_BUFFER_AFTER_MIN, 240) * 60 * 1000,
+    controllerStock: Math.floor(bounded(cfg.controllerStock, DEFAULT_CONTROLLER_STOCK, 500)),
+  };
+  return opsCache;
+}
+
+async function bookingBuffersMs(): Promise<{ beforeMs: number; afterMs: number }> {
+  return opsSettings();
+}
+
+function isControllerAddonLike(addon: { id?: string; name?: string }): boolean {
+  return addon.id === 'extra-controller' || /controller/i.test(addon.name ?? '');
+}
+
+/** Spare controllers already out (with travel buffers) during [startMs, endMs]. */
+async function controllersInUse(startMs: number, endMs: number, now: number, excludeOrderId?: string) {
+  const { beforeMs, afterMs } = await opsSettings();
+  const snap = await db.collection('inventory_reservations').where('kind', '==', 'controllers').get();
+  let used = 0;
+  for (const doc of snap.docs) {
+    const r = doc.data();
+    if (excludeOrderId && r.orderId === excludeOrderId) continue;
+    if (!isActiveReservation(r.status, r.holdExpiresAt, now)) continue;
+    const rStart = new Date(r.startAt).getTime();
+    const rEnd = new Date(r.endAt).getTime();
+    if (rangesOverlap(startMs - beforeMs, endMs + afterMs, rStart - beforeMs, rEnd + afterMs)) {
+      used += Math.max(0, Number(r.quantity) || 0);
+    }
+  }
+  return used;
+}
+
+async function assertControllersFree(
+  wanted: number,
+  startMs: number,
+  endMs: number,
+  now: number,
+  excludeOrderId?: string
+) {
+  if (wanted <= 0) return;
+  const { controllerStock } = await opsSettings();
+  const free = Math.max(0, controllerStock - (await controllersInUse(startMs, endMs, now, excludeOrderId)));
+  if (wanted > free) {
+    throw new HttpsError(
+      'resource-exhausted',
+      free === 0
+        ? 'No extra controllers are free for that time — remove the extra controller or pick another slot.'
+        : `Only ${free} extra controller${free === 1 ? ' is' : 's are'} free for that time — reduce the extras or pick another slot.`
+    );
+  }
+}
+
+/**
+ * A unit is out of the hub from (start − travel out) until (end + pickup/return),
+ * so two rentals clash when those wider windows overlap — not just the rental hours.
+ */
 async function unitHasOverlap(
   unitId: string,
   startMs: number,
@@ -231,6 +311,7 @@ async function unitHasOverlap(
   now: number,
   excludeOrderId?: string
 ): Promise<boolean> {
+  const { beforeMs, afterMs } = await bookingBuffersMs();
   const snap = await db
     .collection('inventory_reservations')
     .where('inventoryUnitId', '==', unitId)
@@ -243,7 +324,7 @@ async function unitHasOverlap(
     if (!isActiveReservation(r.status, r.holdExpiresAt, now)) continue;
     const rStart = new Date(r.startAt).getTime();
     const rEnd = new Date(r.endAt).getTime();
-    if (rangesOverlap(startMs, endMs, rStart, rEnd)) return true;
+    if (rangesOverlap(startMs - beforeMs, endMs + afterMs, rStart - beforeMs, rEnd + afterMs)) return true;
   }
   return false;
 }
@@ -408,6 +489,13 @@ export const createBooking = onCall({ region: REGION }, async (request) => {
   if (startAt.getTime() > now + 31 * 24 * 60 * 60 * 1000) {
     throw new HttpsError('invalid-argument', 'Bookings open up to 30 days ahead');
   }
+  // Cash on delivery is ASAP-only (start ≈ now + 45 min); scheduled orders pay online.
+  if (isCod && startAt.getTime() > now + 90 * 60 * 1000) {
+    throw new HttpsError(
+      'failed-precondition',
+      'Cash on delivery is only for ASAP orders. Pay online to schedule a later slot.'
+    );
+  }
   const startIstHour = new Date(startAt.getTime() + 5.5 * 60 * 60 * 1000).getUTCHours();
   if (startIstHour < 8 || startIstHour >= 24) {
     throw new HttpsError(
@@ -418,6 +506,7 @@ export const createBooking = onCall({ region: REGION }, async (request) => {
 
   // Server-side reprice for product lines
   let expectedSubtotal = 0;
+  let extraControllers = 0;
   for (const line of cart) {
     if (line.experienceId && !line.productId) {
       const expSnap = await db.collection('experiences').doc(line.experienceId).get();
@@ -452,6 +541,7 @@ export const createBooking = onCall({ region: REGION }, async (request) => {
             `Only ${addon.maxQuantity}× ${addon.name} allowed`
           );
         }
+        if (isControllerAddonLike(addon)) extraControllers += a.quantity * (line.quantity || 1);
         expectedAddons += priceForAddon(addon, lineHours, a.quantity);
       }
       if (plans.length) {
@@ -483,6 +573,14 @@ export const createBooking = onCall({ region: REGION }, async (request) => {
     }
     const product = snap.data() as FnProduct & { availableFrom?: string; shortName?: string };
     assertLaunched(startAt.getTime(), product.availableFrom, product.shortName || line.name || line.productId);
+    for (const a of line.addons ?? []) {
+      const addon = (product.addons ?? []).find((x) => x.id === a.id);
+      if (!addon) continue;
+      if (a.quantity > addon.maxQuantity) {
+        throw new HttpsError('failed-precondition', `Only ${addon.maxQuantity}× ${addon.name} allowed per kit`);
+      }
+      if (isControllerAddonLike(addon)) extraControllers += a.quantity * (line.quantity || 1);
+    }
     const expected = expectedLineTotal(productForStart(product, startAt.getTime()), line);
     const client = lineClientTotal(line);
     if (Math.abs(expected - client) > 1) {
@@ -508,6 +606,10 @@ export const createBooking = onCall({ region: REGION }, async (request) => {
     );
   }
   const delivery = await deliveryQuoteFor(hubId, dropoff);
+  // The 15 km limit is by road (straight line is only the fallback when Routes is down).
+  if (delivery.km > SERVICE_RADIUS_KM) {
+    throw new HttpsError('failed-precondition', OUT_OF_AREA_ERROR);
+  }
   const expectedTaxes = 0;
   const expectedTotal = expectedSubtotal + expectedTaxes + delivery.fee;
   if (typeof total === 'number' && Math.abs(expectedTotal - total) > 1) {
@@ -580,10 +682,29 @@ export const createBooking = onCall({ region: REGION }, async (request) => {
       throw new HttpsError('aborted', 'Inventory changed — retry checkout');
     }
   }
+  await assertControllersFree(extraControllers, startMs, endMs, now);
 
   const id = orderId();
   const reservationIds: string[] = [];
   const batch = db.batch();
+  if (extraControllers > 0) {
+    const resRef = db.collection('inventory_reservations').doc();
+    reservationIds.push(resRef.id);
+    batch.set(resRef, {
+      id: resRef.id,
+      kind: 'controllers',
+      quantity: extraControllers,
+      hubId,
+      orderId: id,
+      userId: uid,
+      startAt: startIso,
+      endAt: endIso,
+      status: isCod ? 'confirmed' : 'hold',
+      holdExpiresAt: isCod ? null : holdExpiresAt,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    });
+  }
   for (const a of unitAssignments) {
     const resRef = db.collection('inventory_reservations').doc();
     reservationIds.push(resRef.id);
@@ -658,9 +779,15 @@ export const createBooking = onCall({ region: REGION }, async (request) => {
     dropoffLng: dropoff.lng,
     // 4-digit handover code — customer reads it to the rider before mark-delivered.
     deliveryOtp: String(Math.floor(1000 + Math.random() * 9000)),
+    // Pickup code lives in orders/{id}/private/codes (customer-only); the rider enters it to close.
+    pickupOtpRequired: true,
   };
 
   batch.set(db.collection('orders').doc(id), order);
+  batch.set(db.collection('orders').doc(id).collection('private').doc('codes'), {
+    pickupOtp: String(randomInt(1000, 10000)),
+    createdAt: nowIso,
+  });
   batch.set(
     db.collection('users').doc(uid),
     { legalAcceptance: { version: LEGAL_VERSION, acceptedAt: nowIso, orderId: id } },
@@ -920,9 +1047,8 @@ export const updateOrderStatus = onCall({ region: REGION }, async (request) => {
     throw new HttpsError('permission-denied', 'Not allowed');
   }
 
-  // Customers may only trigger returning → (via completeReturn) — limited self-service
-  const allowedForCustomer = ['returning'];
-  if (!isAdmin && !allowedForCustomer.includes(status)) {
+  // Delivery progress belongs to riders and ops; customers only watch it.
+  if (!isAdmin) {
     throw new HttpsError('permission-denied', 'Only ops can set this status');
   }
 
@@ -960,11 +1086,81 @@ export const updateOrderStatus = onCall({ region: REGION }, async (request) => {
   return { ok: true, status };
 });
 
+// ——— onOrderDelivered ———
+
+const timeFmtIst = new Intl.DateTimeFormat('en-IN', {
+  timeZone: 'Asia/Kolkata',
+  hour: 'numeric',
+  minute: '2-digit',
+  hour12: true,
+});
+
+/**
+ * The rental clock starts at handover, not at booking: when an order turns
+ * "delivered" (rider app or ops), slide startAt/endAt — and the unit
+ * reservations — to start now, keeping the booked length. Never earlier than
+ * the booked start, so an early scheduled drop-off doesn't eat into their slot.
+ */
+export const onOrderDelivered = onDocumentUpdated(
+  { document: 'orders/{orderId}', region: REGION },
+  async (event) => {
+    const before = event.data?.before.data();
+    const after = event.data?.after.data();
+    if (!before || !after || !event.data) return;
+    if (after.status !== 'delivered' || before.status === 'delivered' || after.deliveredAt) return;
+
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    const bookedStart = new Date(after.startAt).getTime();
+    const bookedEnd = new Date(after.endAt).getTime();
+    if (!Number.isFinite(bookedStart) || !Number.isFinite(bookedEnd) || bookedEnd <= bookedStart) {
+      await event.data.after.ref.update({ deliveredAt: nowIso });
+      return;
+    }
+    const startMs = Math.max(nowMs, bookedStart);
+    const endMs = startMs + (bookedEnd - bookedStart);
+    const startIso = new Date(startMs).toISOString();
+    const endIso = new Date(endMs).toISOString();
+
+    await event.data.after.ref.update({
+      deliveredAt: nowIso,
+      bookedStartAt: after.bookedStartAt ?? after.startAt,
+      bookedEndAt: after.bookedEndAt ?? after.endAt,
+      startAt: startIso,
+      endAt: endIso,
+      updatedAt: nowIso,
+    });
+    await Promise.all(
+      ((after.reservationIds ?? []) as string[]).map((rid) =>
+        db
+          .collection('inventory_reservations')
+          .doc(rid)
+          .update({ startAt: startIso, endAt: endIso, updatedAt: nowIso })
+          .catch((err) => logger.warn('reservation shift failed', { rid, err: String(err) }))
+      )
+    );
+
+    if (after.userId) {
+      const hours = Math.round((endMs - startMs) / 3600000);
+      await pushNotification(after.userId, {
+        title: 'Your rental has started',
+        body: `${event.params.orderId}: your ${hours}h started at ${timeFmtIst.format(new Date(startMs))} and ends at ${timeFmtIst.format(new Date(endMs))}.`,
+        type: 'order',
+        orderId: event.params.orderId,
+      });
+    }
+  }
+);
+
 // ——— completeReturn ———
 
+/**
+ * Closing an order is the rider's job (or ops): the assigned rider enters the
+ * customer's pickup code at collection. Customers can never close their own order.
+ */
 export const completeReturn = onCall({ region: REGION }, async (request) => {
   const uid = requireAuth(request.auth?.uid);
-  const { orderId: id } = request.data as { orderId: string };
+  const { orderId: id, otp } = request.data as { orderId: string; otp?: string };
   if (!id) throw new HttpsError('invalid-argument', 'orderId required');
 
   const ref = db.collection('orders').doc(id);
@@ -975,21 +1171,18 @@ export const completeReturn = onCall({ region: REGION }, async (request) => {
   const isAssignedRider =
     riderSnap.exists && riderSnap.data()?.active === true && order.riderId === uid;
   const isAdmin = request.auth?.token?.admin === true;
-  if (order.userId !== uid && !isAdmin && !isAssignedRider) {
-    throw new HttpsError('permission-denied', 'Not your order');
+  if (!isAdmin && !isAssignedRider) {
+    throw new HttpsError('permission-denied', 'Only the delivery rider can complete this order');
   }
   if (order.status === 'completed') return { ok: true };
-  if (!isAdmin && !isAssignedRider) {
-    // Customers can't close an order early: that would free the kit for re-booking
-    // while it's still at their place.
-    const endMs = order.endAt ? new Date(order.endAt).getTime() : 0;
-    const nearEnd = endMs > 0 && Date.now() >= endMs - 30 * 60 * 1000;
-    const delivered = ['delivered', 'active', 'returning'].includes(String(order.status));
-    if (!delivered || (order.status !== 'returning' && !nearEnd)) {
-      throw new HttpsError(
-        'failed-precondition',
-        'You can complete the return once your rental is ending and the rider is collecting the kit.'
-      );
+  if (!isAdmin) {
+    if (order.status !== 'returning') {
+      throw new HttpsError('failed-precondition', 'Start the return pickup before completing the order');
+    }
+    const codes = (await ref.collection('private').doc('codes').get()).data();
+    const expected = String(codes?.pickupOtp ?? '').replace(/\D/g, '');
+    if (expected && String(otp ?? '').replace(/\D/g, '') !== expected) {
+      throw new HttpsError('permission-denied', 'Wrong pickup code — ask the customer for the 4-digit pickup code');
     }
   }
 
@@ -1139,9 +1332,15 @@ async function computeExtensionQuote(orderId: string, extraHours: number) {
   const reservationIds: string[] = order.reservationIds ?? [];
   const now = Date.now();
   const unitIds: string[] = [];
+  let extraControllers = 0;
   for (const rid of reservationIds) {
     const rSnap = await db.collection('inventory_reservations').doc(rid).get();
-    const unitId = rSnap.data()?.inventoryUnitId as string | undefined;
+    const r = rSnap.data();
+    if (r?.kind === 'controllers') {
+      extraControllers += Math.max(0, Number(r.quantity) || 0);
+      continue;
+    }
+    const unitId = r?.inventoryUnitId as string | undefined;
     if (!unitId) continue;
     unitIds.push(unitId);
     const busy = await unitHasOverlap(unitId, oldEndMs, newEndMs, now, orderId);
@@ -1149,6 +1348,7 @@ async function computeExtensionQuote(orderId: string, extraHours: number) {
       throw new HttpsError('resource-exhausted', 'Kit is already booked after your slot — try fewer hours');
     }
   }
+  await assertControllersFree(extraControllers, oldEndMs, newEndMs, now, orderId);
 
   // Price per product group (units × kit rate + addons repriced for extra hours).
   const items: Array<{ productId?: string | null; name: string; price: number }> =
@@ -1168,6 +1368,8 @@ async function computeExtensionQuote(orderId: string, extraHours: number) {
 
   let extSubtotal = 0;
   const perItem: Array<{ name: string; price: number }> = [];
+  /** Itemised lines for the extend screen: kit hours, then each extra (e.g. controllers). */
+  const breakdown: Array<{ label: string; amount: number }> = [];
   for (const it of items) {
     const pid = (it.productId as string | undefined) ?? undefined;
     const units = (pid && byProduct.get(pid)) || 1;
@@ -1179,14 +1381,33 @@ async function computeExtensionQuote(orderId: string, extraHours: number) {
       const pSnap = await db.collection('products').doc(pid).get();
       if (pSnap.exists) {
         const product = productForStart(pSnap.data() as FnProduct, new Date(order.startAt).getTime());
-        lineExt += extensionKitPrice(product, extraHours) * share;
+        // Optional flat extension rates (Admin → product): ₹/extra hour for the kit and per extra controller.
+        const ext = (product as FnProduct & { extensionPricing?: { perHour?: number; addonPerHour?: number } })
+          .extensionPricing;
+        const kitPerHour = Number(ext?.perHour) || 0;
+        const addonPerHour = Number(ext?.addonPerHour) || 0;
+        const kitExt = (kitPerHour > 0 ? kitPerHour * extraHours : extensionKitPrice(product, extraHours)) * share;
+        lineExt += kitExt;
+        breakdown.push({
+          label: kitPerHour > 0 ? `${it.name} · ${extraHours}h × ₹${kitPerHour}` : `${it.name} · +${extraHours}h`,
+          amount: Math.round(kitExt),
+        });
         const catalog = normalizeFnProduct(product).addons ?? [];
         for (const extra of (it as { extras?: string[] }).extras ?? []) {
           const qty = parseExtraQty(extra);
           const nm = parseExtraName(extra);
           if (!qty || !nm) continue;
           const addon = catalog.find((a) => a.name.toLowerCase() === nm);
-          if (addon) lineExt += priceForAddon(addon, extraHours, qty) * share;
+          if (!addon) continue;
+          const flat = addonPerHour > 0 && isControllerAddonLike(addon);
+          const addonExt = (flat ? addonPerHour * extraHours * qty : priceForAddon(addon, extraHours, qty)) * share;
+          lineExt += addonExt;
+          breakdown.push({
+            label: flat
+              ? `${qty}× ${addon.name} · ${extraHours}h × ₹${addonPerHour}`
+              : `${qty}× ${addon.name} · +${extraHours}h`,
+            amount: Math.round(addonExt),
+          });
         }
       } else {
         // Unknown product: pro-rate original line price.
@@ -1208,13 +1429,17 @@ async function computeExtensionQuote(orderId: string, extraHours: number) {
         : 0;
       if (comboPrice > 0) {
         lineExt += comboPrice;
+        breakdown.push({ label: `${it.name} · +${extraHours}h`, amount: Math.round(comboPrice) });
         const comboAddons = (exp?.addons as FnProduct['addons']) ?? [];
         for (const extra of (it as { extras?: string[] }).extras ?? []) {
           const qty = parseExtraQty(extra);
           const nm = parseExtraName(extra);
           if (!qty || !nm) continue;
           const addon = comboAddons.find((a) => a.name.toLowerCase() === nm);
-          if (addon) lineExt += priceForAddon(addon, extraHours, qty);
+          if (!addon) continue;
+          const addonExt = priceForAddon(addon, extraHours, qty);
+          lineExt += addonExt;
+          breakdown.push({ label: `${qty}× ${addon.name} · +${extraHours}h`, amount: Math.round(addonExt) });
         }
       } else {
         // Unknown combo: pro-rate the original line price.
@@ -1230,7 +1455,7 @@ async function computeExtensionQuote(orderId: string, extraHours: number) {
   extSubtotal = Math.round(extSubtotal);
   const taxes = 0;
   const total = extSubtotal + taxes;
-  return { order, ref, oldEndMs, newEndMs, newEndIso, extSubtotal, taxes, total, perItem, unitIds, reservationIds };
+  return { order, ref, oldEndMs, newEndMs, newEndIso, extSubtotal, taxes, total, perItem, breakdown, unitIds, reservationIds };
 }
 
 export const getExtensionQuote = onCall({ region: REGION }, async (request) => {
@@ -1251,6 +1476,7 @@ export const getExtensionQuote = onCall({ region: REGION }, async (request) => {
     taxes: q.taxes,
     total: q.total,
     perItem: q.perItem,
+    breakdown: q.breakdown,
     options: EXTENSION_OPTIONS,
   };
 });

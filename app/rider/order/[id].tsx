@@ -48,6 +48,10 @@ export default function RiderOrderDetailScreen() {
   };
 
   useEffect(() => {
+    setDeliveryCode('');
+  }, [order?.status]);
+
+  useEffect(() => {
     if (!id) return;
     setLoading(true);
     return watchOrder(id, (live) => {
@@ -247,7 +251,10 @@ export default function RiderOrderDetailScreen() {
         ) : null}
         {isMine && next.length > 0
           ? next.map((action) => {
-              const needsOtp = action.status === 'delivered' && Boolean(order.deliveryOtp);
+              const isPickup = action.status === 'completed';
+              const needsOtp = isPickup
+                ? Boolean(order.pickupOtpRequired)
+                : action.status === 'delivered' && Boolean(order.deliveryOtp);
               if (!needsOtp) {
                 return (
                   <Button
@@ -262,9 +269,11 @@ export default function RiderOrderDetailScreen() {
               const codeReady = deliveryCode.replace(/\D/g, '').length === 4;
               return (
                 <View key={action.status} style={styles.otpBlock}>
-                  <Text style={styles.otpTitle}>Handover verification</Text>
+                  <Text style={styles.otpTitle}>{isPickup ? 'Pickup verification' : 'Handover verification'}</Text>
                   <Text style={styles.otpHint}>
-                    Ask the customer for the 4-digit code shown on their tracking screen.
+                    {isPickup
+                      ? 'Collect the kit, then ask the customer for the 4-digit pickup code on their order screen.'
+                      : 'Ask the customer for the 4-digit code shown on their tracking screen.'}
                   </Text>
                   <TextInput
                     value={deliveryCode}
@@ -276,7 +285,7 @@ export default function RiderOrderDetailScreen() {
                     style={styles.otpInput}
                   />
                   <Button
-                    title={busy ? 'Verifying…' : 'Verify & mark delivered'}
+                    title={busy ? 'Verifying…' : isPickup ? 'Verify & complete order' : 'Verify & mark delivered'}
                     size="sm"
                     disabled={busy || !codeReady}
                     onPress={() =>

@@ -127,6 +127,8 @@ export interface Product {
   availableFrom?: string;
   /** Scheduled price change: rentals starting on/after `from` (IST day) use these plans. */
   priceChange?: ProductPriceChange | null;
+  /** Flat extension rates; when unset, extensions are priced from the hour packages. */
+  extensionPricing?: { perHour?: number; addonPerHour?: number } | null;
 }
 
 export interface ProductPriceChange {
@@ -199,6 +201,8 @@ export interface Address {
   lat?: number;
   lng?: number;
   placeId?: string;
+  /** Road distance from the hub, measured for this exact pin (the 15 km limit is by road). */
+  roadCheck?: { lat: number; lng: number; km: number } | null;
 }
 
 export interface PaymentMethod {
@@ -269,6 +273,13 @@ export interface Order {
   /** Delivery + pickup charge set by the server: free ≤ 5 km, then ₹7/km on all 4 trips. */
   deliveryFee?: number;
   deliveryKm?: number;
+  /** Set at handover; startAt/endAt then run from this moment. */
+  deliveredAt?: string;
+  /** The rider must enter the customer's pickup code to complete (code is in orders/{id}/private/codes). */
+  pickupOtpRequired?: boolean;
+  /** The window originally booked, before handover moved it. */
+  bookedStartAt?: string;
+  bookedEndAt?: string;
   total: number;
   paymentMethodLabel: string;
   /** demo = no payment gateway was used; cod = collected at handover */
@@ -412,6 +423,12 @@ export interface AppConfig {
   freeDeliveryAbove: number;
   defaultEtaMinutes: number;
   bookingHoldMinutes: number;
+  /** Console blocked this long before a rental starts (rider travel out). */
+  bufferBeforeMinutes: number;
+  /** …and this long after it ends (pickup, ride back, cleaning). */
+  bufferAfterMinutes: number;
+  /** Spare controllers shared across all kits (the one in each box isn't counted). */
+  controllerStock: number;
   supportPhone: string;
   supportEmail: string;
   supportWhatsapp: string;
@@ -433,6 +450,9 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
   freeDeliveryAbove: 0,
   defaultEtaMinutes: 30,
   bookingHoldMinutes: 15,
+  bufferBeforeMinutes: 40,
+  bufferAfterMinutes: 40,
+  controllerStock: 10,
   supportPhone: '',
   supportEmail: 'playportofficial@gmail.com',
   supportWhatsapp: '',

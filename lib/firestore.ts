@@ -99,6 +99,27 @@ export async function fetchInventoryUnitsForHub(hubId: string): Promise<Inventor
   return mapDocs<InventoryUnit>(snap);
 }
 
+/** The customer's 4-digit pickup code (private to them; the rider enters it to close the order). */
+export function watchPickupCode(orderId: string, cb: (code: string | null) => void): Unsubscribe {
+  return onSnapshot(
+    doc(db, 'orders', orderId, 'private', 'codes'),
+    (snap) => cb(snap.exists() ? String(snap.data()?.pickupOtp ?? '') || null : null),
+    () => cb(null)
+  );
+}
+
+/** Live units for a hub, so maintenance/available flips show without a reload. */
+export function watchInventoryUnitsForHub(
+  hubId: string,
+  cb: (units: InventoryUnit[]) => void
+): Unsubscribe {
+  return onSnapshot(
+    query(collection(db, 'inventory_units'), where('hubId', '==', hubId)),
+    (snap) => cb(mapDocs<InventoryUnit>(snap)),
+    () => {}
+  );
+}
+
 export async function upsertUserProfile(userId: string, data: Partial<User> & DocumentData) {
   const cleaned: DocumentData = {};
   for (const [key, value] of Object.entries(data)) {

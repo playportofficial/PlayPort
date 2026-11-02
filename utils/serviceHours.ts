@@ -221,7 +221,12 @@ export function formatSlotTime(iso: string): string {
 export function formatWindow(startIso: string, hours: number): string {
   const start = new Date(startIso);
   const end = new Date(start.getTime() + hours * 60 * 60 * 1000);
-  return `${shortTimeFmt.format(start)} – ${shortTimeFmt.format(end)}`;
+  return `${clockTime(start)} – ${clockTime(end)}`;
+}
+
+/** "4 pm" on the hour, "3:59 pm" otherwise — never hide the minutes. */
+function clockTime(date: Date): string {
+  return istDate(date).getUTCMinutes() === 0 ? shortTimeFmt.format(date) : timeFmt.format(date);
 }
 
 /** Next opening time (8 AM IST) when currently closed. */

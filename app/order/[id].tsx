@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { PriceBreakdown } from '@/components/cart/PriceBreakdown';
 import { Screen } from '@/components/layout/Screen';
@@ -15,6 +15,8 @@ import { colors, fonts, radii, spacing } from '@/constants/theme';
 import { useResponsive } from '@/hooks/useResponsive';
 import { useAppStore } from '@/store/appStore';
 import { useNow } from '@/hooks/useNow';
+import { watchPickupCode } from '@/lib/firestore';
+import { formatSlotTime } from '@/utils/serviceHours';
 import { formatINR, formatReturnLabel } from '@/utils/format';
 import { locationAgeLabel, remainingEtaMinutes } from '@/utils/liveEta';
 import type { OrderStatus } from '@/types';
@@ -57,7 +59,14 @@ export default function OrderDetailScreen() {
   const orders = useAppStore((s) => s.orders);
   const order = useMemo(() => orders.find((o) => o.id === id), [orders, id]);
   const trackable = order?.status === 'out_for_delivery' || order?.status === 'returning';
-  const now = useNow(trackable);
+  const inUse = order?.status === 'delivered' || order?.status === 'active';
+  const now = useNow(trackable || inUse);
+  const [pickupCode, setPickupCode] = useState<string | null>(null);
+  const showPickupCode = inUse || order?.status === 'returning';
+  useEffect(() => {
+    if (!id || !showPickupCode) return;
+    return watchPickupCode(id, setPickupCode);
+  }, [id, showPickupCode]);
 
   if (!order) {
     return (
@@ -78,7 +87,14 @@ export default function OrderDetailScreen() {
   const cancellable =
     !order.riderId &&
     (order.status === 'pending_payment' || order.status === 'confirmed' || order.status === 'preparing');
-  const canReturn = order.status === 'active' || order.status === 'delivered' || order.status === 'returning';
+  const endMs = order.endAt ? new Date(order.endAt).getTime() : NaN;
+  const minutesLeft = Number.isFinite(endMs) ? Math.max(0, Math.round((endMs - now) / 60000)) : null;
+  const timeLeft =
+    minutesLeft == null
+      ? ''
+      : minutesLeft >= 60
+        ? `${Math.floor(minutesLeft / 60)}h ${minutesLeft % 60}m left`
+        : `${minutesLeft} min left`;
   const canExtend =
     (order.status === 'delivered' || order.status === 'active') && order.paymentStatus === 'paid';
   const liveMinutes = remainingEtaMinutes(order, now);
@@ -129,6 +145,12 @@ export default function OrderDetailScreen() {
                   ? 'Booking confirmed'
                   : orderStatusHeadline(order.status)}
           </Text>
+          {inUse && order.endAt ? (
+            <Text style={styles.endsLine}>
+              Your time ends at {formatSlotTime(order.endAt)}
+              {timeLeft ? ` · ${timeLeft}` : ''}
+            </Text>
+          ) : null}
           <Text style={styles.statusSub}>
             {order.addressLabel} · {order.addressFull}
           </Text>
@@ -175,6 +197,16 @@ export default function OrderDetailScreen() {
             <View style={[styles.progressFill, { width: `${order.progressPercent}%` }]} />
           </View>
         </Card>
+
+        {showPickupCode && pickupCode ? (
+          <Card style={styles.codeCard}>
+            <Text style={styles.codeLabel}>PICKUP CODE</Text>
+            <Text style={styles.codeValue}>{pickupCode.split('').join(' ')}</Text>
+            <Text style={styles.codeHint}>
+              Give this code to your rider only when they collect the kit. It closes your rental.
+            </Text>
+          </Card>
+        ) : null}
 
         <Text style={styles.sectionTitle}>Reserved Hardware</Text>
         <View style={styles.list}>
@@ -299,14 +331,6 @@ export default function OrderDetailScreen() {
               onPress={() => router.push(`/order/cancel/${order.id}`)}
             />
           ) : null}
-          {canReturn ? (
-            <Button
-              title="Complete Return"
-              variant="secondary"
-              fullWidth
-              onPress={() => router.push(`/order/return/${order.id}`)}
-            />
-          ) : null}
         </View>
       </ScrollView>
     </Screen>
@@ -349,6 +373,11 @@ const styles = StyleSheet.create({
   eta: { color: colors.secondaryText, fontFamily: fonts.mono, fontSize: 12 },
   statusTitle: { color: colors.primaryText, fontFamily: fonts.heading, fontSize: 20 },
   statusSub: { color: colors.secondaryText, fontFamily: fonts.body, fontSize: 13, lineHeight: 18 },
+  endsLine: { color: colors.playportOrange, fontFamily: fonts.bodyMedium, fontSize: 15 },
+  codeCard: { alignItems: 'center', gap: 6, borderWidth: 1, borderColor: colors.playportOrange },
+  codeLabel: { color: colors.mutedText, fontFamily: fonts.bodyMedium, fontSize: 12, letterSpacing: 1 },
+  codeValue: { color: colors.primaryText, fontFamily: fonts.heading, fontSize: 32, letterSpacing: 6 },
+  codeHint: { color: colors.secondaryText, fontFamily: fonts.body, fontSize: 13, textAlign: 'center' },
   timeline: { flexDirection: 'row', marginTop: spacing.sm },
   timelineItem: { flex: 1, alignItems: 'center', position: 'relative' },
   timelineDot: {

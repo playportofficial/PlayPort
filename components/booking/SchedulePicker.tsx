@@ -118,13 +118,15 @@ export function SchedulePicker({ maxHours, notBefore }: Props) {
             </Text>
           ) : (
             <Text style={styles.scheduleSub}>
-              Pick a day and time — your {maxHours}h window ends automatically.
+              Pick a day and time — your {maxHours}h starts when the kit is delivered.
             </Text>
           )}
         </>
       ) : (
         <Text style={styles.scheduleSub}>
-          {open ? 'Rider heads out ~45 min after payment.' : 'ASAP resumes at 8 AM.'}
+          {open
+            ? `Arrives in about 45 min · your ${maxHours}h starts when the kit is delivered.`
+            : 'ASAP resumes at 8 AM.'}
         </Text>
       )}
     </View>

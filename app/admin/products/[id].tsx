@@ -84,7 +84,9 @@ export default function AdminProductEditScreen() {
   const [controllerTiers, setControllerTiers] = useState<
     { upToHours: string; price: string; mode: 'flat' | 'hourly' }[]
   >([{ upToHours: '', price: '', mode: 'hourly' }]);
-  const [controllerMax, setControllerMax] = useState('3');
+  const [controllerMax, setControllerMax] = useState('1');
+  const [extPerHour, setExtPerHour] = useState('');
+  const [extAddonPerHour, setExtAddonPerHour] = useState('');
   const [ratingText, setRatingText] = useState('');
   const [tagsText, setTagsText] = useState('');
   const [requirementsText, setRequirementsText] = useState('');
@@ -109,7 +111,9 @@ export default function AdminProductEditScreen() {
       setControllerTiers([
         { upToHours: '', price: '', mode: 'hourly' },
       ]);
-      setControllerMax('3');
+      setControllerMax('1');
+      setExtPerHour('');
+      setExtAddonPerHour('');
       setRatingText('');
       setTagsText('');
       setRequirementsText('');
@@ -143,7 +147,9 @@ export default function AdminProductEditScreen() {
               }))
             : []
         );
-        setControllerMax(ctrl ? String(ctrl.maxQuantity) : '3');
+        setControllerMax(ctrl ? String(ctrl.maxQuantity) : '1');
+        setExtPerHour(p.extensionPricing?.perHour ? String(p.extensionPricing.perHour) : '');
+        setExtAddonPerHour(p.extensionPricing?.addonPerHour ? String(p.extensionPricing.addonPerHour) : '');
         setAddons((n.addons ?? []).filter((a) => !isControllerAddon(a)));
         setRatingText(n.rating ? String(n.rating) : '');
         setTagsText((n.tags ?? []).join(', '));
@@ -269,6 +275,10 @@ export default function AdminProductEditScreen() {
         availableFrom: form.availableFrom?.trim() ?? '',
         plans: cleanedPlans,
         priceChange,
+        extensionPricing:
+          num(extPerHour) > 0 || num(extAddonPerHour) > 0
+            ? { perHour: Math.max(0, num(extPerHour)), addonPerHour: Math.max(0, num(extAddonPerHour)) }
+            : null,
         hourly: hourly.enabled
           ? {
               enabled: true,
@@ -720,9 +730,38 @@ export default function AdminProductEditScreen() {
           keyboardType="numeric"
           value={controllerMax}
           onChangeText={setControllerMax}
-          placeholder="3"
+          placeholder="1"
           placeholderTextColor={colors.mutedText}
         />
+      </View>
+      <Text style={adminStyles.cardTitle}>Extension prices</Text>
+      <Text style={[adminStyles.subtitle, { marginBottom: spacing.sm }]}>
+        What a customer pays per extra hour when extending a live rental. Leave empty to price extensions
+        from the hour packages above.
+      </Text>
+      <View style={adminStyles.row}>
+        <View style={[adminStyles.field, { flex: 1 }]}>
+          <Text style={adminStyles.label}>Kit ₹ per extra hour</Text>
+          <TextInput
+            style={adminStyles.input}
+            keyboardType="numeric"
+            value={extPerHour}
+            onChangeText={setExtPerHour}
+            placeholder="150"
+            placeholderTextColor={colors.mutedText}
+          />
+        </View>
+        <View style={[adminStyles.field, { flex: 1, marginLeft: 8 }]}>
+          <Text style={adminStyles.label}>Each extra controller ₹ per hour</Text>
+          <TextInput
+            style={adminStyles.input}
+            keyboardType="numeric"
+            value={extAddonPerHour}
+            onChangeText={setExtAddonPerHour}
+            placeholder="20"
+            placeholderTextColor={colors.mutedText}
+          />
+        </View>
       </View>
       <ControllerPricePreview
         perHour={controllerPerHour}

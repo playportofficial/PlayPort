@@ -62,9 +62,9 @@ export async function checkSlot(
   startIso: string,
   hours: number,
   quantity = 1
-): Promise<{ free: boolean; totalUnits: number }> {
+): Promise<{ free: boolean; totalUnits: number; failed?: boolean }> {
   const start = new Date(startIso).getTime();
-  if (!Number.isFinite(start)) return { free: false, totalUnits: 0 };
+  if (!Number.isFinite(start)) return { free: false, totalUnits: 0, failed: true };
   try {
     const res = await callCheckAvailability({
       productId,
@@ -76,7 +76,7 @@ export async function checkSlot(
     const free = res.ok && (res.availableUnitIds?.length ?? 0) > 0;
     return { free, totalUnits: res.totalUnits ?? 0 };
   } catch {
-    return { free: false, totalUnits: 0 };
+    return { free: false, totalUnits: 0, failed: true };
   }
 }
 

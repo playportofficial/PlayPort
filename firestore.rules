@@ -121,14 +121,23 @@ service cloud.firestore {
           && resource.data.riderId == request.auth.uid
           && request.resource.data.riderId == request.auth.uid
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-            'status', 'progressPercent', 'updatedAt', 'liveDispatch', 'completedAt',
+            'status', 'progressPercent', 'updatedAt', 'liveDispatch',
             'etaLabel', 'etaMinutes', 'etaSource', 'riderDistanceKm',
             'riderLat', 'riderLng', 'riderLocationUpdatedAt',
             'dropoffLat', 'dropoffLng',
             'riderName', 'riderPhone', 'riderAcceptedAt'
           ])
+          // Completing goes through completeReturn (pickup code checked on the server).
           && request.resource.data.status in
-            ['preparing', 'out_for_delivery', 'delivered', 'active', 'returning', 'completed']);
+            ['preparing', 'out_for_delivery', 'delivered', 'active', 'returning']);
+
+      // Pickup code: only the customer (to read it out) and ops. Riders never see it.
+      match /private/{docId} {
+        allow read: if isOps()
+          || (signedIn()
+            && get(/databases/$(database)/documents/orders/$(orderId)).data.userId == request.auth.uid);
+        allow write: if false;
+      }
     }
 
     match /riders/{riderId} {

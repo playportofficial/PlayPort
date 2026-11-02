@@ -19,6 +19,7 @@ import { useResponsive } from '@/hooks/useResponsive';
 import { useAppStore, useCartTotals } from '@/store/appStore';
 import { ensureLoggedIn } from '@/utils/authGate';
 import { formatINR } from '@/utils/format';
+import { isValidScheduledStart } from '@/utils/serviceHours';
 import type { PaymentMethodType } from '@/types';
 
 const PAY_ICONS: Record<PaymentMethodType, keyof typeof Ionicons.glyphMap> = {
@@ -48,6 +49,17 @@ export default function PaymentScreen() {
   const [displayTotal, setDisplayTotal] = useState(totals.total);
   const [termsAccepted, setTermsAccepted] = useState(false);
   const orderingPaused = useCatalogStore((s) => s.orderingPaused);
+  const scheduledStartAt = useAppStore((s) => s.scheduledStartAt);
+  const scheduledOrder = isValidScheduledStart(scheduledStartAt, new Date());
+
+  useEffect(() => {
+    if (!scheduledOrder) return;
+    const current = paymentMethods.find((m) => m.id === selectedPaymentMethodId);
+    if (current?.type === 'cod') {
+      const online = paymentMethods.find((m) => m.type !== 'cod');
+      if (online) selectPaymentMethod(online.id);
+    }
+  }, [scheduledOrder, paymentMethods, selectedPaymentMethodId, selectPaymentMethod]);
 
   useEffect(() => {
     if (authReady && !isAuthenticated) {
@@ -110,7 +122,8 @@ export default function PaymentScreen() {
         ? `Includes ${formatINR(delivery.quote.fee)} delivery (${delivery.quote.km} km)`
         : `Free delivery (${delivery.quote.km} km from hub)`
       : deliveryNoteFor(delivery.status);
-  const selectedMethod = paymentMethods.find((m) => m.id === selectedPaymentMethodId);
+  const methods = scheduledOrder ? paymentMethods.filter((m) => m.type !== 'cod') : paymentMethods;
+  const selectedMethod = methods.find((m) => m.id === selectedPaymentMethodId);
   const isCod = selectedMethod?.type === 'cod';
 
   return (
@@ -139,7 +152,10 @@ export default function PaymentScreen() {
         </View>
 
         <View style={styles.methods}>
-          {paymentMethods.map((method) => {
+          {scheduledOrder && paymentMethods.some((m) => m.type === 'cod') ? (
+            <Text style={styles.summaryNote}>Cash on delivery is only for ASAP orders — scheduled orders are paid online.</Text>
+          ) : null}
+          {methods.map((method) => {
             const selected = method.id === selectedPaymentMethodId;
             return (
               <Pressable

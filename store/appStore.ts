@@ -29,7 +29,6 @@ import {
 } from '@/lib/firestore';
 import {
   callCancelBooking,
-  callCompleteReturn,
   callConfirmPayment,
   callCreateBooking,
   callCreateRazorpayOrder,
@@ -158,7 +157,6 @@ interface AppState {
     opts?: { termsVersion?: string }
   ) => Promise<{ ok: boolean; orderId?: string; error?: string }>;
   cancelOrder: (orderId: string, reason: string) => Promise<void>;
-  completeReturn: (orderId: string) => Promise<void>;
   applyOrderExtension: (orderId: string, patch: Partial<Order>) => void;
 
   markNotificationRead: (id: string) => void;
@@ -725,6 +723,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (deliveryQuoteKey(get().addresses.find((a) => a.id === get().selectedAddressId) ?? get().addresses[0]) !== key) {
         return null;
       }
+      const lat = address.lat as number;
+      const lng = address.lng as number;
+      const known = address.roadCheck;
+      if (!known || known.lat !== lat || known.lng !== lng || known.km !== quote.km) {
+        get().updateAddress(address.id, { roadCheck: { lat, lng, km: quote.km } });
+      }
+      if (quote.serviceable === false) {
+        set({ deliveryQuote: null, deliveryQuoteStatus: 'idle', deliveryQuoteError: null });
+        return null;
+      }
       set({ deliveryQuote: { ...quote, key }, deliveryQuoteStatus: 'ready' });
       return quote;
     } catch (err) {
@@ -854,6 +862,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const payment = paymentMethods.find((p) => p.id === selectedPaymentMethodId);
     const isCod = payment?.type === 'cod';
+    if (isCod && scheduledOk) {
+      return { ok: false, error: 'Cash on delivery is only for ASAP orders. Pay online to schedule a later slot.' };
+    }
     const totals = calcCartTotals(cart, quote?.fee ?? currentDeliveryFee(get()));
     const hub = useCatalogStore.getState().hub;
     const hubId = user.homeHubId || hub?.id;
@@ -1002,15 +1013,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       orders: get().orders.map((o) =>
         o.id === orderId ? { ...o, status: 'cancelled', progressPercent: 0 } : o
-      ),
-    });
-  },
-
-  completeReturn: async (orderId) => {
-    await callCompleteReturn(orderId);
-    set({
-      orders: get().orders.map((o) =>
-        o.id === orderId ? { ...o, status: 'completed', progressPercent: 100 } : o
       ),
     });
   },

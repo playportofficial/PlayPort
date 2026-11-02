@@ -93,6 +93,12 @@ describe('formatting + next opening', () => {
     expect(label).toContain('4');
     expect(label).toContain('–');
   });
+  it('formatWindow keeps the minutes for an off-the-hour ASAP start', () => {
+    // 3:14 PM IST + 45 min = 3:59 PM — must not read as "3 pm – 6 pm".
+    expect(formatWindow(T('2026-10-12T10:29:00Z').toISOString(), 3).replace(/\s/g, ' ').toLowerCase()).toBe(
+      '3:59 pm – 6:59 pm'
+    );
+  });
   it('nextOpenStart points at 8 AM (same day before, next day after)', () => {
     expect(nextOpenStart(T('2026-10-12T20:00:00Z')).toISOString()).toBe('2026-10-13T02:30:00.000Z');
     expect(nextOpenStart(T('2026-10-12T06:00:00Z')).toISOString()).toBe('2026-10-13T02:30:00.000Z');

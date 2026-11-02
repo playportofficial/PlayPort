@@ -71,6 +71,9 @@ export default function AdminSettingsScreen() {
           ['maxUnitsPerOrder', 'Max units per order'],
           ['defaultEtaMinutes', 'Default ETA minutes'],
           ['bookingHoldMinutes', 'Payment hold minutes'],
+          ['bufferBeforeMinutes', 'Buffer before each rental (min) — rider travel out'],
+          ['bufferAfterMinutes', 'Buffer after each rental (min) — pickup, ride back, cleaning'],
+          ['controllerStock', 'Spare controllers in stock (shared by all kits)'],
         ] as const
       ).map(([key, label]) => (
         <View key={key} style={adminStyles.field}>

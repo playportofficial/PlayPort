@@ -5,6 +5,7 @@ import {
   fetchInventoryUnitsForHub,
   fetchProducts,
   resolveDefaultHub,
+  watchInventoryUnitsForHub,
   watchOrderingStatus,
 } from '@/lib/firestore';
 import type { Experience, HubInfo, InventoryUnit, Product } from '@/types';
@@ -40,6 +41,7 @@ interface CatalogState {
 const DISALLOWED_TAGS = /deposit|digilocker|kyc/i;
 
 let orderingUnsub: (() => void) | null = null;
+let unitsWatch: { hubId: string; unsub: () => void } | null = null;
 
 function sanitizeProduct(p: Product): Product {
   return {
@@ -59,6 +61,20 @@ function enrichProducts(products: Product[], units: InventoryUnit[]): Product[] 
       availabilityLabel: n > 0 ? `${n} units at hub` : 'No units at hub',
     };
   });
+}
+
+type CatalogSet = (partial: Partial<CatalogState>) => void;
+
+function watchUnits(hubId: string, set: CatalogSet, get: () => CatalogState) {
+  if (unitsWatch?.hubId === hubId) return;
+  unitsWatch?.unsub();
+  unitsWatch = {
+    hubId,
+    unsub: watchInventoryUnitsForHub(hubId, (units) => {
+      if (get().hub.id !== hubId) return;
+      set({ units, products: enrichProducts(get().products, units) });
+    }),
+  };
 }
 
 export const useCatalogStore = create<CatalogState>((set, get) => ({
@@ -91,6 +107,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => ({
     if (!hub) return;
     const units = await fetchInventoryUnitsForHub(hub.id);
     set({ hub, units, products: enrichProducts(get().products, units) });
+    watchUnits(hub.id, set, get);
   },
 
   hydrate: async () => {
@@ -122,6 +139,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => ({
           ? null
           : 'No products in the store yet. Add them in Admin → Products.',
       });
+      if (hubList.length) watchUnits(hub.id, set, get);
     } catch (e) {
       // Never ship mock SKUs — show empty catalog + error.
       set({

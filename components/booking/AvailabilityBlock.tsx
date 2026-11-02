@@ -11,7 +11,7 @@ import {
   type SlotCheckItem,
 } from '@/lib/availability';
 import { formatLaunchDay } from '@/utils/launch';
-import { isAsapAvailable, isServiceOpen } from '@/utils/serviceHours';
+import { formatSlotTime, isAsapAvailable, isServiceOpen } from '@/utils/serviceHours';
 
 interface Props {
   items: SlotCheckItem[];
@@ -31,7 +31,8 @@ type State =
   | { kind: 'soldout'; name: string; window: string; suggestionIso: string | null; suggestionWindow: string | null; hours: number }
   | { kind: 'nostock'; name: string }
   | { kind: 'closed' }
-  | { kind: 'prebook' };
+  | { kind: 'prebook' }
+  | { kind: 'failed' };
 
 /**
  * Orange "Check Availability" for ASAP or a scheduled window.
@@ -70,7 +71,11 @@ export function AvailabilityBlock({ items, hubId, startIso, onApplySlot, notBefo
     };
     const maxHours = Math.max(1, ...items.map((i) => i.hours));
     for (const item of items) {
-      const { free, totalUnits } = await checkSlot(item.productId, hubId, start, item.hours, item.quantity ?? 1);
+      const { free, totalUnits, failed } = await checkSlot(item.productId, hubId, start, item.hours, item.quantity ?? 1);
+      if (failed) {
+        await finish({ kind: 'failed' });
+        return;
+      }
       if (totalUnits === 0) {
         await finish({ kind: 'nostock', name: item.name });
         return;
@@ -95,7 +100,12 @@ export function AvailabilityBlock({ items, hubId, startIso, onApplySlot, notBefo
         return;
       }
     }
-    await finish({ kind: 'available', window: windowLabel(start, maxHours) });
+    await finish({
+      kind: 'available',
+      window: startIso
+        ? `${windowLabel(start, maxHours)} · ready to book`
+        : `Arrives ~${formatSlotTime(start)} · your ${maxHours}h starts on delivery`,
+    });
   };
 
   return (
@@ -116,7 +126,7 @@ export function AvailabilityBlock({ items, hubId, startIso, onApplySlot, notBefo
           <IoniconsIcon name="checkmark-circle" size={20} color={colors.success} />
           <View style={{ flex: 1 }}>
             <Text style={styles.okTitle}>Slot available at this time.</Text>
-            <Text style={styles.okSub}>{state.window} · ready to book.</Text>
+            <Text style={styles.okSub}>{state.window}.</Text>
           </View>
         </View>
       ) : null}
@@ -162,6 +172,16 @@ export function AvailabilityBlock({ items, hubId, startIso, onApplySlot, notBefo
             <Text style={styles.soldSub}>
               We’re restocking this kit — check back soon or try another kit.
             </Text>
+          </View>
+        </View>
+      ) : null}
+
+      {state.kind === 'failed' ? (
+        <View style={[styles.card, styles.soldCard]}>
+          <IoniconsIcon name="cloud-offline-outline" size={20} color={colors.secondaryText} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.soldTitle}>Couldn’t check availability.</Text>
+            <Text style={styles.soldSub}>Check your connection and tap Check Availability again.</Text>
           </View>
         </View>
       ) : null}

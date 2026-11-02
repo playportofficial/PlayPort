@@ -22,7 +22,7 @@ export function defaultExtraControllerAddon(): ProductAddon {
     id: 'extra-controller',
     name: 'Extra Controller',
     description: '₹100 up to 6h · ₹120 up to 12h · ₹150 up to 24h',
-    maxQuantity: 3,
+    maxQuantity: 1,
     pricing: {
       perHour: 20,
       perHourMaxPlanHours: 6,

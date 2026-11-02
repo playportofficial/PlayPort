@@ -184,7 +184,7 @@ export default function ProfileScreen() {
               <View style={styles.userRow}>
                 <Image
                   source={{ uri: user.avatar }}
-                  style={[styles.avatar, user.kycVerified && styles.avatarKyc]}
+                  style={styles.avatar}
                   contentFit="cover"
                 />
                 <View style={styles.userMeta}>
@@ -192,14 +192,6 @@ export default function ProfileScreen() {
                   <Text style={styles.userPhone}>{user.phone}</Text>
                   {user.email ? <Text style={styles.userEmail}>{user.email}</Text> : null}
                 </View>
-                {user.kycVerified ? (
-                  <Badge
-                    label="KYC"
-                    color={colors.playportOrange}
-                    backgroundColor={colors.orangeTint}
-                    left={<Ionicons name="checkmark-circle" size={12} color={colors.playportOrange} />}
-                  />
-                ) : null}
               </View>
               <Pressable
                 accessibilityRole="button"
@@ -368,7 +360,6 @@ const styles = StyleSheet.create({
     borderColor: colors.borderSubtle,
     backgroundColor: colors.surfaceAlt,
   },
-  avatarKyc: { borderColor: colors.playportOrange },
   userMeta: { flex: 1, gap: 4 },
   userName: { color: colors.primaryText, fontFamily: fonts.heading, fontSize: typeScale.headline },
   userPhone: { color: colors.secondaryText, fontFamily: fonts.bodyMedium, fontSize: typeScale.body },

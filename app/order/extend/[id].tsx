@@ -253,12 +253,19 @@ export default function ExtendOrderScreen() {
                 <Ionicons name="checkmark-circle" size={18} color={colors.success} />
                 <Text style={styles.quoteOk}>Available until {formatReturnLabel(quote.newEndAt)}</Text>
               </View>
-              {quote.perItem.map((p) => (
-                <View key={p.name} style={styles.perItem}>
-                  <Text style={styles.perItemName}>{p.name}</Text>
-                  <Text style={styles.perItemPrice}>{formatINR(p.price)}</Text>
-                </View>
-              ))}
+              {quote.breakdown?.length
+                ? quote.breakdown.map((line, i) => (
+                    <View key={`${line.label}-${i}`} style={styles.perItem}>
+                      <Text style={styles.perItemName}>{line.label}</Text>
+                      <Text style={styles.perItemPrice}>{formatINR(line.amount)}</Text>
+                    </View>
+                  ))
+                : quote.perItem.map((p) => (
+                    <View key={p.name} style={styles.perItem}>
+                      <Text style={styles.perItemName}>{p.name}</Text>
+                      <Text style={styles.perItemPrice}>{formatINR(p.price)}</Text>
+                    </View>
+                  ))}
               <View style={styles.totalRow}>
                 <Text style={styles.totalLabel}>Extension total</Text>
                 <Text style={styles.totalValue}>{formatINR(quote.total)}</Text>

@@ -54,6 +54,8 @@ export type DeliveryQuote = {
   ratePerKm: number;
   /** Drop-off out and back + pickup out and back. */
   trips: number;
+  /** False when the road distance is past the 15 km service limit. */
+  serviceable?: boolean;
 };
 
 export async function callQuoteDelivery(input: {
@@ -111,9 +113,9 @@ export async function callUpdateOrderStatus(orderId: string, status: string) {
   return res.data;
 }
 
-export async function callCompleteReturn(orderId: string) {
-  const fn = httpsCallable<{ orderId: string }, { ok: boolean }>(functions, 'completeReturn');
-  const res = await fn({ orderId });
+export async function callCompleteReturn(orderId: string, otp?: string) {
+  const fn = httpsCallable<{ orderId: string; otp?: string }, { ok: boolean }>(functions, 'completeReturn');
+  const res = await fn(otp ? { orderId, otp } : { orderId });
   return res.data;
 }
 
@@ -127,6 +129,8 @@ export type ExtensionQuote = {
   taxes: number;
   total: number;
   perItem: { name: string; price: number }[];
+  /** Kit hours and each extra (e.g. "1× Extra Controller · 3h × ₹20"). */
+  breakdown?: { label: string; amount: number }[];
   options: number[];
 };
 

@@ -122,7 +122,6 @@ export default function RootLayout() {
         <Stack.Screen name="order/[id]" />
         <Stack.Screen name="order/track/[id]" />
         <Stack.Screen name="order/cancel/[id]" />
-        <Stack.Screen name="order/return/[id]" />
         <Stack.Screen name="profile/addresses" />
         <Stack.Screen name="profile/payment-methods" />
         <Stack.Screen name="profile/notifications" />

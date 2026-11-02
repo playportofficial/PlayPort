@@ -333,12 +333,9 @@ export async function riderUpdateOrderStatus(
   }
 
   if (status === 'completed') {
-    try {
-      await callCompleteReturn(orderId);
-      return;
-    } catch {
-      // Fall through and close locally, then release the unit if rules allow.
-    }
+    // Server checks the customer's pickup code, closes the order and frees the kit.
+    await callCompleteReturn(orderId, otp);
+    return;
   }
 
   const now = new Date().toISOString();
@@ -348,7 +345,6 @@ export async function riderUpdateOrderStatus(
     progressPercent: PROGRESS[status] ?? order.progressPercent,
     updatedAt: now,
     liveDispatch: enRoute,
-    ...(status === 'completed' ? { completedAt: now, etaLabel: 'Rental complete' } : {}),
     ...(status === 'out_for_delivery' ? { etaLabel: 'Rider on the way' } : {}),
     ...(status === 'delivered'
       ? { etaLabel: 'Delivered', etaMinutes: deleteField(), riderDistanceKm: deleteField() }
@@ -362,19 +358,6 @@ export async function riderUpdateOrderStatus(
         }
       : {}),
   });
-
-  if (status === 'completed') {
-    const nowIso = new Date().toISOString();
-    await Promise.all(
-      (order.reservationIds ?? []).map((rid) =>
-        updateDoc(doc(db, 'inventory_reservations', rid), {
-          status: 'completed',
-          holdExpiresAt: null,
-          updatedAt: nowIso,
-        }).catch(() => undefined)
-      )
-    );
-  }
 
   if (order.userId) {
     const messages: Partial<Record<OrderStatus, { title: string; body: string }>> = {
