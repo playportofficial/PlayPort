@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { ScheduleCalendar } from '@/components/booking/ScheduleCalendar';
 import { colors, fonts, radii, spacing, typeScale } from '@/constants/theme';
@@ -29,6 +29,10 @@ export function SchedulePicker({ maxHours, notBefore }: Props) {
   const setScheduledStartAt = useAppStore((s) => s.setScheduledStartAt);
   // Open on whatever is really saved — a slot picked earlier means Schedule, not ASAP.
   const [pickedMode, setSchedMode] = useState<'asap' | 'scheduled'>(() => (scheduledStartAt ? 'scheduled' : 'asap'));
+  // A slot set from elsewhere (e.g. "Book … instead") must flip this to Schedule — never show ASAP over a saved slot.
+  useEffect(() => {
+    if (scheduledStartAt) setSchedMode('scheduled');
+  }, [scheduledStartAt]);
   const now = useMemo(() => new Date(), []);
   const open = isServiceOpen(now);
   const asapOk = isAsapAvailable(now, maxHours, notBefore);

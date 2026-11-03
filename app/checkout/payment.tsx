@@ -19,6 +19,8 @@ import { useResponsive } from '@/hooks/useResponsive';
 import { useAppStore, useCartTotals } from '@/store/appStore';
 import { ensureLoggedIn } from '@/utils/authGate';
 import { formatINR } from '@/utils/format';
+import { useOrderNotBefore } from '@/hooks/useOrderNotBefore';
+import { formatSlot, isAsapAvailable } from '@/utils/serviceHours';
 import type { PaymentMethodType } from '@/types';
 
 const PAY_ICONS: Record<PaymentMethodType, keyof typeof Ionicons.glyphMap> = {
@@ -51,6 +53,9 @@ export default function PaymentScreen() {
   const scheduledStartAt = useAppStore((s) => s.scheduledStartAt);
   // Any picked slot is a scheduled order — even one that's now too close (it must be re-picked, never turned into ASAP).
   const scheduledOrder = Boolean(scheduledStartAt);
+  const setScheduledStartAt = useAppStore((s) => s.setScheduledStartAt);
+  const notBefore = useOrderNotBefore();
+  const asapPossible = isAsapAvailable(new Date(), Math.max(1, ...cart.map((c) => c.hours ?? 3)), notBefore);
 
   useEffect(() => {
     if (!scheduledOrder) return;
@@ -153,7 +158,17 @@ export default function PaymentScreen() {
 
         <View style={styles.methods}>
           {scheduledOrder && paymentMethods.some((m) => m.type === 'cod') ? (
-            <Text style={styles.summaryNote}>Cash on delivery is only for ASAP orders — scheduled orders are paid online.</Text>
+            <View style={styles.codNote}>
+              <Text style={styles.summaryNote}>
+                Scheduled for {formatSlot(scheduledStartAt as string)} — cash on delivery is only for ASAP orders, so
+                this one is paid online.
+              </Text>
+              {asapPossible ? (
+                <Pressable accessibilityRole="button" onPress={() => setScheduledStartAt(null)} hitSlop={8}>
+                  <Text style={styles.codSwitch}>Switch to ASAP to pay cash on delivery</Text>
+                </Pressable>
+              ) : null}
+            </View>
           ) : null}
           {methods.map((method) => {
             const selected = method.id === selectedPaymentMethodId;
@@ -320,6 +335,8 @@ const styles = StyleSheet.create({
   summaryTitle: { color: colors.secondaryText, fontFamily: fonts.body, fontSize: typeScale.body },
   summaryTotal: { color: colors.primaryText, fontFamily: fonts.heading, fontSize: typeScale.display },
   summaryNote: { color: colors.mutedText, fontFamily: fonts.body, fontSize: typeScale.small },
+  codNote: { gap: 6 },
+  codSwitch: { color: colors.playportOrange, fontFamily: fonts.bodyMedium, fontSize: typeScale.small },
   stickyBar: { flexDirection: 'column', alignItems: 'stretch' },
   stickyCol: { width: '100%' },
   termsHint: {
