@@ -42,6 +42,13 @@ import {
 } from '@/utils/rentalPricing';
 import type { PricingMode } from '@/types';
 
+/**
+ * Temporarily hidden: the per-console picker (and its per-unit game list) is not
+ * ready to show customers yet. The code is kept — flip this back to true when the
+ * per-unit game catalog is ready (expected in a few days/weeks).
+ */
+const SHOW_UNIT_GAMES_PICKER = false;
+
 const FLOW_STEPS = [
   {
     title: 'Prepared at the hub',
@@ -285,7 +292,7 @@ export default function ProductDetailScreen() {
           />
         </View>
 
-        {unitsHaveGames ? (
+        {SHOW_UNIT_GAMES_PICKER && unitsHaveGames ? (
           <View style={styles.section}>
             <SectionHeader eyebrow="Your console" title="Choose which one" />
             <Text style={styles.addonDesc}>
@@ -534,7 +541,7 @@ export default function ProductDetailScreen() {
           title={launch ? 'Pre-book' : 'Add to cart'}
           icon={<Ionicons name="bag-add-outline" size={16} color={colors.white} />}
           onPress={() => {
-            if (unitsHaveGames && !unitId) {
+            if (SHOW_UNIT_GAMES_PICKER && unitsHaveGames && !unitId) {
               showToast('Choose which unit you want');
               return;
             }

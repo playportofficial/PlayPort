@@ -1,6 +1,6 @@
 import { getFunctions, httpsCallable, connectFunctionsEmulator } from 'firebase/functions';
 import { firebaseApp } from '@/lib/firebase';
-import type { CartItem, Order, PaymentStatus } from '@/types';
+import type { CartItem, Order, OrderRefund, PaymentStatus } from '@/types';
 
 const functions = getFunctions(firebaseApp, 'asia-south1');
 
@@ -16,6 +16,8 @@ export type CreateBookingInput = {
   cart: CartItem[];
   addressLabel: string;
   addressFull: string;
+  /** Saved address doc id — the server copies the contact name/phone for the rider. */
+  addressId?: string;
   /** Exact delivery pin locked on the address (Zepto-style). */
   dropoffLat?: number;
   dropoffLng?: number;
@@ -74,6 +76,22 @@ export async function callCreateBooking(input: CreateBookingInput): Promise<Crea
   return res.data;
 }
 
+export type RunContact = {
+  customerName: string | null;
+  customerPhone: string | null;
+  addressInstructions: string | null;
+};
+
+/**
+ * Rider-authorized customer contact for a run. Needed for orders booked before
+ * contact was copied onto the order, which riders otherwise cannot look up.
+ */
+export async function callGetRunContact(orderId: string): Promise<RunContact> {
+  const fn = httpsCallable<{ orderId: string }, RunContact>(functions, 'getRunContact');
+  const res = await fn({ orderId });
+  return res.data;
+}
+
 export type RazorpayPaymentProof = { razorpayOrderId: string; paymentId: string; signature: string };
 
 export async function callConfirmPayment(
@@ -95,8 +113,29 @@ export async function callConfirmPaymentDemo(orderId: string, fail = false) {
   return callConfirmPayment(orderId, fail);
 }
 
+export type RefundResult = {
+  ok: boolean;
+  refunded: boolean;
+  manual: boolean;
+  gatewayUsed: boolean;
+  record: OrderRefund | null;
+};
+
+export async function callExecuteRefundBooking(
+  orderId: string,
+  reason?: string,
+  staffNote?: string
+): Promise<RefundResult> {
+  const fn = httpsCallable<
+    { orderId: string; reason?: string; staffNote?: string },
+    RefundResult
+  >(functions, 'executeRefundBooking');
+  const res = await fn({ orderId, reason, staffNote });
+  return res.data;
+}
+
 export async function callCancelBooking(orderId: string, reason?: string) {
-  const fn = httpsCallable<{ orderId: string; reason?: string }, { ok: boolean }>(
+  const fn = httpsCallable<{ orderId: string; reason?: string }, { ok: boolean; refunded?: boolean; manual?: boolean }>(
     functions,
     'cancelBooking'
   );

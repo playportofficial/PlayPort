@@ -16,6 +16,7 @@ import { useAppStore } from '@/store/appStore';
 import type { Order } from '@/types';
 import { formatEtaMinutes } from '@/utils/geo';
 import { formatINR, orderStatusLabel } from '@/utils/format';
+import { formatSlotTime } from '@/utils/serviceHours';
 import { isEnRoute, locationAgeLabel, remainingEtaMinutes } from '@/utils/liveEta';
 
 const STEPS = ['Confirmed', 'On the way', 'With you', 'Pickup', 'Done'] as const;
@@ -40,9 +41,27 @@ function stepIndex(status: Order['status']): number {
   }
 }
 
-function trackingHeadline(order: Order, now: number): { eyebrow: string; value: string } {
+function trackingHeadline(order: Order, now: number): { eyebrow: string; value: string; late?: boolean; expired?: boolean } {
   const mins = remainingEtaMinutes(order, now);
   const live = mins != null && Boolean(order.riderLocationUpdatedAt);
+
+  const bookedEndMs = order.bookedEndAt ? new Date(order.bookedEndAt).getTime() : NaN;
+  const slotExpired =
+    Number.isFinite(bookedEndMs) &&
+    bookedEndMs < now &&
+    order.status !== 'completed';
+  const isLateDelivery = Boolean(order.lateDeliveredAt) && order.status !== 'completed';
+
+  if (slotExpired) {
+    return {
+      eyebrow: 'Slot passed',
+      value: order.riderName
+        ? 'This slot passed and a rider was later assigned.'
+        : 'This slot passed with no rider dispatched.',
+      expired: true,
+    };
+  }
+
   if (order.status === 'out_for_delivery') {
     return { eyebrow: 'Arriving in', value: live ? formatEtaMinutes(mins) : 'Getting live location…' };
   }
@@ -50,7 +69,13 @@ function trackingHeadline(order: Order, now: number): { eyebrow: string; value: 
     return { eyebrow: 'Pickup in', value: live ? formatEtaMinutes(mins) : 'Getting live location…' };
   }
   if (order.status === 'delivered' || order.status === 'active') {
-    return { eyebrow: 'With you', value: 'Session in progress' };
+    return {
+      eyebrow: isLateDelivery ? 'Started late' : 'With you',
+      value: isLateDelivery
+        ? 'Session in progress (started after the booked end time)'
+        : 'Session in progress',
+      late: isLateDelivery,
+    };
   }
   if (order.status === 'completed') {
     return { eyebrow: 'Done', value: 'Rental complete' };
@@ -110,6 +135,11 @@ export default function OrderTrackScreen() {
               ) : (
                 <Text style={styles.etaRider}>Waiting for a rider to accept</Text>
               )}
+              {headline?.expired ? (
+                <Text style={styles.etaMetaLate}>
+                  This booking’s original slot has already passed. If you still need help, contact PlayPort.
+                </Text>
+              ) : null}
               {enRoute && order.riderDistanceKm != null && order.riderDistanceKm > 0 ? (
                 <Text style={styles.etaMeta}>
                   {order.etaSource === 'road' ? '' : '~'}
@@ -163,6 +193,15 @@ export default function OrderTrackScreen() {
               </View>
             ) : null}
 
+            {headline?.late ? (
+              <View style={styles.noteLate}>
+                <Ionicons name="alert-circle-outline" size={16} color={colors.danger} />
+                <Text style={styles.noteLateText}>
+                  Your session started after the booked end time. That does not extend your rental —
+                  it starts at handover and ends {order.bookedEndAt ? `at ${formatSlotTime(order.bookedEndAt)}` : 'as booked'}.
+                </Text>
+              </View>
+            ) : null}
             <View style={styles.note}>
               <Ionicons name="information-circle-outline" size={16} color={colors.mutedText} />
               <Text style={styles.noteText}>
@@ -350,6 +389,27 @@ const styles = StyleSheet.create({
     fontFamily: fonts.body,
     fontSize: 12,
     lineHeight: 17,
+  },
+  noteLate: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'flex-start',
+    paddingHorizontal: 4,
+    marginTop: spacing.xs,
+  },
+  noteLateText: {
+    flex: 1,
+    color: colors.danger,
+    fontFamily: fonts.body,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  etaMetaLate: {
+    color: colors.danger,
+    fontFamily: fonts.body,
+    fontSize: typeScale.small,
+    lineHeight: 17,
+    textAlign: 'center',
   },
   section: {
     color: colors.primaryText,

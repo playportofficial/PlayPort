@@ -7,6 +7,7 @@ import {
   formatSlotTime,
   formatWindow,
   isDispatchable,
+  deliverySlot,
   isServiceOpen,
   isValidScheduledStart,
   nextOpenStart,
@@ -173,5 +174,60 @@ describe('rentalEndsInServiceHours (pickup must land 8 AM – 11:59 PM IST)', ()
     expect(isAsapAvailable(ist(18), 3)).toBe(true); // 6:45 PM → 9:45 PM
     expect(isAsapAvailable(ist(22), 3)).toBe(false); // 10:45 PM → 1:45 AM
     expect(isAsapAvailable(ist(22), 12)).toBe(true); // → 10:45 AM
+  });
+});
+
+describe('isDispatchable grace window (long rentals close with their slot)', () => {
+  const iso = (utc: string) => T(utc).toISOString();
+  // Booked 11:13 AM IST (05:43Z), 24h rental → endAt next morning.
+  const order = {
+    startAt: iso('2026-10-12T05:43:00Z'),
+    endAt: iso('2026-10-13T05:43:00Z'),
+  };
+  it('stays claimable just after the booked start', () => {
+    expect(isDispatchable(order, T('2026-10-12T06:00:00Z'))).toBe(true); // 17 min late
+  });
+  it('leaves the pool once the 90-min grace is gone', () => {
+    expect(isDispatchable(order, T('2026-10-12T07:13:00Z'))).toBe(true); // exactly 90 min
+    expect(isDispatchable(order, T('2026-10-12T07:14:00Z'))).toBe(false); // 91 min
+  });
+  it('never keeps a 24h rental claimable all afternoon', () => {
+    expect(isDispatchable(order, T('2026-10-12T08:45:00Z'))).toBe(false); // 2:15 PM IST
+  });
+  it('drops orders ops flagged expired', () => {
+    expect(
+      isDispatchable({ ...order, expiredAt: iso('2026-10-12T06:30:00Z') }, T('2026-10-12T06:00:00Z'))
+    ).toBe(false);
+  });
+});
+
+describe('deliverySlot (honest rider labels)', () => {
+  const iso = (utc: string) => T(utc).toISOString();
+  it('does not call an upcoming slot running', () => {
+    const slot = deliverySlot({ startAt: iso('2026-10-12T10:30:00Z') }, T('2026-10-12T06:00:00Z'))!;
+    expect(slot.state).toBe('upcoming');
+    expect(slot.lateMinutes).toBe(0);
+    expect(slot.note).toMatch(/starts at handover/);
+  });
+  it('reports how late a passed slot is, and the booked window', () => {
+    const slot = deliverySlot(
+      { startAt: iso('2026-10-12T05:43:00Z'), endAt: iso('2026-10-13T05:43:00Z') },
+      T('2026-10-12T09:00:00Z') // 3h 17m after start
+    )!;
+    expect(slot.state).toBe('expired');
+    expect(slot.lateMinutes).toBe(197);
+    expect(slot.hours).toBe(24);
+    expect(slot.window).toMatch(/Today, .* – Tomorrow, /);
+    expect(slot.note).toMatch(/passed 3h 17m ago/);
+  });
+  it('marks an ops-expired order as expired', () => {
+    const slot = deliverySlot(
+      { startAt: iso('2026-10-12T10:30:00Z'), expiredAt: iso('2026-10-12T06:00:00Z') },
+      T('2026-10-12T06:00:00Z')
+    )!;
+    expect(slot.state).toBe('expired');
+  });
+  it('returns null without a readable start', () => {
+    expect(deliverySlot({}, T('2026-10-12T06:00:00Z'))).toBeNull();
   });
 });

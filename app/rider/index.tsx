@@ -5,8 +5,8 @@ import { StatusBadge } from '@/components/ui/StatusBadge';
 import { colors, fonts, radii, spacing, typeScale } from '@/constants/theme';
 import { useResponsive } from '@/hooks/useResponsive';
 import { useRiderStore } from '@/store/riderStore';
-import { orderStatusLabel } from '@/utils/format';
-import { formatSlot } from '@/utils/serviceHours';
+import { riderStatusLabel } from '@/utils/format';
+import { deliverySlot, formatLate } from '@/utils/serviceHours';
 
 export default function RiderAvailableScreen() {
   const { horizontalPadding } = useResponsive();
@@ -36,39 +36,46 @@ export default function RiderAvailableScreen() {
           </Text>
         </View>
       ) : (
-        available.map((order) => (
-          <View key={order.id} style={styles.card}>
-            <View style={styles.row}>
-              <Text style={styles.cardTitle}>{order.id}</Text>
-              <StatusBadge status={order.status} label={orderStatusLabel(order.status)} />
+        available.map((order) => {
+          const slot = deliverySlot(order);
+          return (
+            <View key={order.id} style={styles.card}>
+              <View style={styles.row}>
+                <Text style={styles.cardTitle}>{order.id}</Text>
+                <StatusBadge status={order.status} label={riderStatusLabel(order.status)} />
+              </View>
+              <Text style={styles.meta}>{order.addressFull || order.addressLabel}</Text>
+              {slot ? (
+                <Text style={[styles.meta, slot.state !== 'upcoming' && styles.metaWarn]}>
+                  {slot.state === 'upcoming'
+                    ? `Delivery slot ${slot.window}${slot.hours ? ` · ${slot.hours}h` : ''} · clock starts at handover`
+                    : `Delivery slot ${slot.startLabel} · ${formatLate(slot.lateMinutes)} late · clock starts at handover`}
+                </Text>
+              ) : null}
+              <Text style={styles.meta}>
+                {order.items?.length ?? 0} items · ₹{order.total} · ETA {order.etaLabel}
+              </Text>
+              <View style={styles.actions}>
+                <Button
+                  title="Accept run"
+                  size="sm"
+                  onPress={() => {
+                    void accept(order.id)
+                      .then(() => router.push(`/rider/order/${order.id}` as never))
+                      .catch((e) => {
+                        if (typeof window !== 'undefined') {
+                          window.alert(e instanceof Error ? e.message : 'Accept failed');
+                        }
+                      });
+                  }}
+                />
+                <Pressable onPress={() => router.push(`/rider/order/${order.id}` as never)}>
+                  <Text style={styles.link}>Details</Text>
+                </Pressable>
+              </View>
             </View>
-            <Text style={styles.meta}>{order.addressFull || order.addressLabel}</Text>
-            {order.startAt ? (
-              <Text style={styles.meta}>Starts {formatSlot(order.startAt)}</Text>
-            ) : null}
-            <Text style={styles.meta}>
-              {order.items?.length ?? 0} items · ₹{order.total} · ETA {order.etaLabel}
-            </Text>
-            <View style={styles.actions}>
-              <Button
-                title="Accept run"
-                size="sm"
-                onPress={() => {
-                  void accept(order.id)
-                    .then(() => router.push(`/rider/order/${order.id}` as never))
-                    .catch((e) => {
-                      if (typeof window !== 'undefined') {
-                        window.alert(e instanceof Error ? e.message : 'Accept failed');
-                      }
-                    });
-                }}
-              />
-              <Pressable onPress={() => router.push(`/rider/order/${order.id}` as never)}>
-                <Text style={styles.link}>Details</Text>
-              </Pressable>
-            </View>
-          </View>
-        ))
+          );
+        })
       )}
     </ScrollView>
   );
@@ -102,6 +109,7 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   cardTitle: { fontFamily: fonts.heading, fontSize: typeScale.title, color: colors.primaryText },
   meta: { fontFamily: fonts.body, fontSize: typeScale.small, color: colors.secondaryText, lineHeight: 18 },
+  metaWarn: { color: colors.danger },
   actions: { flexDirection: 'row', alignItems: 'center', gap: 16, marginTop: 4 },
   link: { fontFamily: fonts.bodyMedium, color: colors.playportOrange, fontSize: typeScale.body },
 });

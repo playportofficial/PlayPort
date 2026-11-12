@@ -57,6 +57,7 @@
     "firebase:seed:rest": "tsx scripts/seedRest.ts",
     "firebase:wipe:catalog": "tsx scripts/wipeCatalog.ts",
     "firebase:admin:claim": "tsx scripts/setAdminClaim.ts",
+    "firebase:backfill:contacts": "tsx scripts/backfillOrderContacts.ts",
     "firebase:deploy": "npx -y firebase-tools@latest deploy --only firestore,auth --project playport-fd57f",
     "firebase:deploy:firestore": "npx -y firebase-tools@latest deploy --only firestore --project playport-fd57f",
     "firebase:deploy:functions": "npm --prefix functions run build && npx -y firebase-tools@latest deploy --only functions --project playport-fd57f",

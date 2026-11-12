@@ -14,7 +14,7 @@ import {
   type Unsubscribe,
 } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase';
-import { callClaimDeliveryOrder, callCompleteReturn } from '@/lib/functions';
+import { callClaimDeliveryOrder, callCompleteReturn, callGetRunContact, type RunContact } from '@/lib/functions';
 import { computeDeliveryEta, geocodeAddress } from '@/lib/deliveryEta';
 import { createUserNotification } from '@/lib/notify';
 import { formatSlot, isDispatchable } from '@/utils/serviceHours';
@@ -112,7 +112,10 @@ export function watchRiderOrders(
           !o.riderId &&
           (!o.paymentStatus || o.paymentStatus === 'paid' || o.paymentStatus === 'cod') &&
           ['confirmed', 'preparing'].includes(o.status) &&
-          // Scheduled runs surface ~1h before startAt, never after endAt.
+          // Only claimable now:
+          // - not expired,
+          // - original slot not yet ended (ended = no longer in rider pool),
+          // - start within dispatch lead if scheduled.
           isDispatchable(o, now)
       )
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -135,11 +138,19 @@ export async function riderAcceptOrder(orderId: string, rider: Rider): Promise<v
   if (!['confirmed', 'preparing'].includes(order.status)) {
     throw new Error('Order is not ready for dispatch');
   }
+  if (order.expiredAt) {
+    throw new Error('This order’s slot has expired — contact ops to review it.');
+  }
   if (!isDispatchable(order)) {
-    const when = order.startAt ? formatSlot(order.startAt) : null;
-    throw new Error(
-      when ? `Too early — this run starts ${when}` : 'This run is no longer dispatchable'
-    );
+    if (order.startAt) {
+      const when = formatSlot(order.startAt);
+      const ended = order.endAt ? new Date(order.endAt).getTime() < new Date().getTime() : false;
+      if (ended) {
+        return;
+      }
+      throw new Error(`Too early — this run starts ${when}`);
+    }
+    throw new Error('This run is no longer dispatchable');
   }
   const now = new Date().toISOString();
   const address = order.addressFull || order.addressLabel || '';
@@ -338,19 +349,25 @@ export async function riderUpdateOrderStatus(
     return;
   }
 
+  // Handover is one step: verifying the door code puts the order straight into
+  // "active" (customer is using the kit) instead of parking it in "delivered" and
+  // waiting for a second "Customer using kit" tap that riders routinely forget.
+  // deliveredAt and the rental clock are filled by onOrderHandedOver, which fires on
+  // this write for either "delivered" (ops) or "active" (rider).
+  const nextStatus: OrderStatus = status === 'delivered' ? 'active' : status;
+
   const now = new Date().toISOString();
-  const enRoute = status === 'out_for_delivery' || status === 'returning';
+  const enRoute = nextStatus === 'out_for_delivery' || nextStatus === 'returning';
   await updateDoc(ref, {
-    status,
-    progressPercent: PROGRESS[status] ?? order.progressPercent,
+    status: nextStatus,
+    progressPercent: PROGRESS[nextStatus] ?? order.progressPercent,
     updatedAt: now,
     liveDispatch: enRoute,
-    ...(status === 'out_for_delivery' ? { etaLabel: 'Rider on the way' } : {}),
-    ...(status === 'delivered'
-      ? { etaLabel: 'Delivered', etaMinutes: deleteField(), riderDistanceKm: deleteField() }
+    ...(nextStatus === 'out_for_delivery' ? { etaLabel: 'Rider on the way' } : {}),
+    ...(nextStatus === 'active'
+      ? { etaLabel: 'With you', etaMinutes: deleteField(), riderDistanceKm: deleteField() }
       : {}),
-    ...(status === 'active' ? { etaLabel: 'With you' } : {}),
-    ...(status === 'returning'
+    ...(nextStatus === 'returning'
       ? {
           etaLabel: 'On the way for pickup',
           etaMinutes: deleteField(),
@@ -369,6 +386,10 @@ export async function riderUpdateOrderStatus(
         title: 'Kit delivered',
         body: `${orderId} has been delivered and set up.`,
       },
+      active: {
+        title: 'Kit delivered — clock started',
+        body: `${orderId} has been handed over and your rental time is running.`,
+      },
       returning: {
         title: 'Return pickup started',
         body: `Your rider is on the way to pick up ${orderId}.`,
@@ -378,7 +399,7 @@ export async function riderUpdateOrderStatus(
         body: `${orderId} is closed. Thanks for renting with PlayPort.`,
       },
     };
-    const msg = messages[status];
+    const msg = messages[nextStatus];
     if (msg) {
       await createUserNotification(order.userId, {
         ...msg,
@@ -408,4 +429,14 @@ export function watchOrder(orderId: string, cb: (order: Order | null) => void): 
 export async function adminAssignRider(orderId: string, rider: Rider): Promise<void> {
   // Same path as rider self-accept so customer gets ETA + en-route status.
   await riderAcceptOrder(orderId, rider);
+}
+
+/**
+ * Customer contact for a run. Orders booked before contact was copied onto them
+ * carry no number, and riders can't read users/{uid}/addresses under the rules — so
+ * ask the server, which resolves the booked address for a run the rider owns or
+ * could claim.
+ */
+export async function riderGetRunContact(orderId: string): Promise<RunContact> {
+  return callGetRunContact(orderId);
 }

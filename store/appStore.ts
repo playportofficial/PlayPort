@@ -62,6 +62,7 @@ import type {
   Address,
   AppNotification,
   CartItem,
+  OrderRefund,
   PricingMode,
   Order,
   PaymentMethod,
@@ -894,6 +895,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           hubId,
           cart: cartSnapshot,
           addressLabel: address.label || 'Home',
+          // Lets the server attach the contact name/phone + door notes for the rider.
+          addressId: address.id,
           addressFull: [
             address.line1,
             address.line2,
@@ -1012,7 +1015,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     await callCancelBooking(orderId, reason);
     set({
       orders: get().orders.map((o) =>
-        o.id === orderId ? { ...o, status: 'cancelled', progressPercent: 0 } : o
+        o.id === orderId
+          ? { ...o, status: 'cancelled', progressPercent: 0, paymentStatus: o.paymentStatus === 'paid' ? 'refunded' : o.paymentStatus }
+          : o
       ),
     });
   },

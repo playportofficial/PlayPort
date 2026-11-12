@@ -17,6 +17,7 @@ import { useAppStore } from '@/store/appStore';
 import { ensureLoggedIn } from '@/utils/authGate';
 import { formatINR } from '@/utils/format';
 import { formatFunctionsError } from '@/utils/functionsError';
+import type { Order } from '@/types';
 
 const REASONS = ['Changed plans', 'Found alternative', 'Delay', 'Other'] as const;
 
@@ -81,7 +82,7 @@ export default function CancelOrderScreen() {
           <Text style={styles.successBody}>
             {order.paymentStatus === 'cod'
               ? `#${order.id} is cancelled. Nothing was charged — there's nothing to refund.`
-              : `#${order.id} is cancelled. Refund of ${formatINR(order.total)} will credit to ${order.paymentMethodLabel} within 3–5 business days.`}
+              : refundDoneBodyFor(order)}
           </Text>
           <Button title="Go to orders" fullWidth onPress={() => router.replace('/(tabs)/orders')} />
         </View>
@@ -180,9 +181,7 @@ export default function CancelOrderScreen() {
             <Text style={styles.refundTitle}>Refund info</Text>
           </View>
           <Text style={styles.refundBody}>
-            {order.paymentStatus === 'cod'
-              ? 'Free cancellation before dispatch. Nothing was charged, so there is nothing to refund.'
-              : `Free cancellation before dispatch. The full ${formatINR(order.total)} goes back to your original payment method within 7 working days; your bank may take a few extra days to show it.`}
+            {refundCardBodyFor(order)}
           </Text>
           <Text
             style={styles.refundLink}
@@ -206,6 +205,37 @@ export default function CancelOrderScreen() {
       </ScrollView>
     </Screen>
   );
+}
+
+function refundCardBodyFor(order: Order): string {
+  if (order.paymentStatus === 'cod') {
+    return 'Free cancellation before dispatch. Nothing was charged, so there is nothing to refund.';
+  }
+  return `Free cancellation before dispatch. The full ${formatINR(order.total)} goes back to your original payment method within 7 working days; your bank or payment provider may take a few extra days to show it.`;
+}
+
+function refundDoneBodyFor(order: Order): string {
+  if (order.paymentStatus === 'cod') {
+    return `#${order.id} is cancelled. Nothing was charged — there's nothing to refund.`;
+  }
+  if (order.refund?.status === 'processed') {
+    if (order.refund.providerRefundId) {
+      return `#${order.id} is cancelled. Refund of ${formatINR(order.refund.amount ?? order.total)} was processed via Razorpay (refund ${order.refund.providerRefundId}) and is on its way back to ${order.paymentMethodLabel}. It may take a few working days to show, and sometimes a little longer depending on your bank or payment provider.`;
+    }
+    return `#${order.id} is cancelled. Refund of ${formatINR(order.refund.amount ?? order.total)} has been processed and is on its way back to ${order.paymentMethodLabel}. It may take a few working days to show, and sometimes a little longer depending on your bank or payment provider.`;
+  }
+  if (order.refund?.status === 'pending') {
+    if (order.refund.providerRefundId) {
+      return `#${order.id} is cancelled. Refund of ${formatINR(order.refund.amount ?? order.total)} has been requested and is in progress. We’ll update this order when it’s confirmed. Expect it within 7 working days, and sometimes a little longer depending on your bank or payment provider.`;
+    }
+    return `#${order.id} is cancelled. Refund of ${formatINR(order.refund.amount ?? order.total)} has been recorded for the PlayPort team to process manually, and will be sent back to ${order.paymentMethodLabel} within 7 working days. Your bank or payment provider may take a few extra days to show it.`;
+  }
+  if (order.refund?.status === 'failed') {
+    return `#${order.id} is cancelled, but the automatic refund could not be completed: ${order.refund.error ?? 'unknown error'}. Please contact PlayPort on WhatsApp so we can sort it out.`;
+  }
+  // Fallback for a paid order that transitioned to cancelled/refunded before we
+  // had a refund record (legacy data, or the server wrote the status first).
+  return `#${order.id} is cancelled. The full ${formatINR(order.total)} goes back to ${order.paymentMethodLabel} within 7 working days; your bank or payment provider may take a few extra days to show it.`;
 }
 
 const styles = StyleSheet.create({

@@ -21,6 +21,7 @@ const FILTERS: { id: 'open' | 'all' | OrderStatus; label: string }[] = [
   { id: 'returning', label: 'Returning' },
   { id: 'completed', label: 'Done' },
   { id: 'cancelled', label: 'Cancelled' },
+  { id: 'refunded', label: 'Refunded' },
 ];
 
 const OPEN: OrderStatus[] = [
@@ -32,6 +33,8 @@ const OPEN: OrderStatus[] = [
   'active',
   'returning',
 ];
+
+
 
 export default function AdminOrdersScreen() {
   const { horizontalPadding } = useResponsive();
@@ -91,6 +94,12 @@ export default function AdminOrdersScreen() {
               {o.addressLabel} · ₹{o.total} · {o.paymentStatus ?? '—'} · hub {o.hubId ?? '—'}
             </Text>
             <Text style={adminStyles.cardMeta}>{o.items?.map((i) => i.name).join(', ')}</Text>
+            {o.refund ? (
+              <Text style={adminStyles.cardMeta}>
+                Refund {o.refund.status === 'processed' ? 'processed' : o.refund.status === 'failed' ? 'had an issue' : 'pending'} · ₹{o.total}
+                {o.refund.providerRefundId ? ` · Razorpay ${o.refund.providerRefundId}` : ''}
+              </Text>
+            ) : null}
           </Pressable>
         ))
       )}

@@ -15,6 +15,16 @@
         { "fieldPath": "status", "mode": "ASCENDING" },
         { "fieldPath": "holdExpiresAt", "mode": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "paymentStatus", "mode": "ASCENDING" },
+        { "fieldPath": "riderId", "mode": "ASCENDING" },
+        { "fieldPath": "status", "mode": "ASCENDING" },
+        { "fieldPath": "startAt", "mode": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

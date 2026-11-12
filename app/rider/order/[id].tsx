@@ -6,22 +6,45 @@ import { StatusBadge } from '@/components/ui/StatusBadge';
 import { colors, fonts, radii, spacing, typeScale } from '@/constants/theme';
 import { useResponsive } from '@/hooks/useResponsive';
 import { callCollectCodPayment } from '@/lib/functions';
-import { riderGetOrder, watchOrder } from '@/lib/riderFirestore';
+import { riderGetOrder, riderGetRunContact, watchOrder } from '@/lib/riderFirestore';
 import { geocodeAddress } from '@/lib/deliveryEta';
 import { useRiderStore } from '@/store/riderStore';
+import type { RunContact } from '@/lib/functions';
 import type { Order, OrderStatus } from '@/types';
 import { useNow } from '@/hooks/useNow';
-import { orderStatusLabel } from '@/utils/format';
-import { formatSlot } from '@/utils/serviceHours';
+import { rentalWindow, riderStatusLabel } from '@/utils/format';
+import { deliverySlot, isDispatchable } from '@/utils/serviceHours';
 import { isEnRoute, locationAgeLabel, remainingEtaMinutes } from '@/utils/liveEta';
+
+/** +919876543210 → "+91 98765 43210" so the number reads like one. */
+function prettyPhone(phone?: string): string | undefined {
+  const digits = (phone ?? '').replace(/\D/g, '');
+  if (digits.length === 12 && digits.startsWith('91')) {
+    return `+91 ${digits.slice(2, 7)} ${digits.slice(7)}`;
+  }
+  return phone;
+}
+
+/** One-line "what now" per status, so an accepted run explains itself. */
+const NEXT_STEP: Partial<Record<OrderStatus, string>> = {
+  confirmed: 'Accept this run to lock it in — the customer is waiting for a rider.',
+  preparing: 'Pick up the kit from the hub, then tap "Start delivery".',
+  out_for_delivery:
+    'Ride to the address. At the door, ask for the customer\u2019s 4-digit handover code and enter it — that starts their rental clock.',
+  delivered:
+    'Handover done and the rental clock is running. Collect cash if this is COD, then start the return pickup when their time is up.',
+  active:
+    'The customer is using the kit — their clock started at handover. Head back when the rental ends and tap "Start return pickup".',
+  returning:
+    'Collect the kit and check the accessories, then enter the customer\u2019s pickup code to close the run.',
+};
 
 const RIDER_NEXT: Record<string, { status: OrderStatus; label: string }[]> = {
   preparing: [{ status: 'out_for_delivery', label: 'Start delivery' }],
-  out_for_delivery: [{ status: 'delivered', label: 'Mark delivered / setup done' }],
-  delivered: [
-    { status: 'active', label: 'Customer using kit' },
-    { status: 'returning', label: 'Start return pickup' },
-  ],
+  // Verifying the door code writes the order straight to "active", so there is no
+  // separate "Customer using kit" tap to forget.
+  out_for_delivery: [{ status: 'delivered', label: 'Verify handover & start clock' }],
+  delivered: [{ status: 'returning', label: 'Start return pickup' }],
   active: [{ status: 'returning', label: 'Start return pickup' }],
   returning: [{ status: 'completed', label: 'Return complete' }],
 };
@@ -37,6 +60,7 @@ export default function RiderOrderDetailScreen() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deliveryCode, setDeliveryCode] = useState('');
+  const [contact, setContact] = useState<RunContact | null>(null);
 
   const reload = async () => {
     setLoading(true);
@@ -117,9 +141,65 @@ export default function RiderOrderDetailScreen() {
     await Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${dest}`);
   };
 
+  // Newer bookings carry the number on the order; older ones need the server lookup
+  // because riders can't read the customer's saved address under the rules.
+  const customerPhone = order?.customerPhone ?? contact?.customerPhone ?? undefined;
+  const customerName = order?.customerName ?? contact?.customerName ?? undefined;
+  const doorNotes = order?.addressInstructions ?? contact?.addressInstructions ?? undefined;
+
+  const callCustomer = () => {
+    const phone = customerPhone?.replace(/[^\d+]/g, '');
+    if (!phone) return;
+    void Linking.openURL(`tel:${phone}`);
+  };
+
+  const fetchContact = () => {
+    if (!order) return;
+    void (async () => {
+      setBusy(true);
+      setError(null);
+      try {
+        const found = await riderGetRunContact(order.id);
+        setContact(found);
+        if (!found.customerPhone && !found.customerName) {
+          setError('No contact on file for this booking — ask ops to check the customer’s address.');
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Could not fetch the customer number');
+      } finally {
+        setBusy(false);
+      }
+    })();
+  };
+
   const isMine = order?.riderId && rider && order.riderId === rider.id;
-  const canClaim = order && !order.riderId && ['confirmed', 'preparing'].includes(order.status);
   const next = order ? RIDER_NEXT[order.status] ?? [] : [];
+  const rental = order ? rentalWindow(order) : null;
+  const nextStep = order ? NEXT_STEP[order.status] ?? null : null;
+
+  // Both the label and the gate come from the *delivery slot*: a 24h rental booked
+  // for 11:13 AM is late at 2 PM, not "starting at 11:13 AM" all afternoon.
+  const slot = order ? deliverySlot(order) : null;
+  const isExpired = Boolean(order?.expiredAt);
+  const slotClosed = slot?.state === 'expired';
+  const canClaim =
+    Boolean(order) &&
+    !order!.riderId &&
+    ['confirmed', 'preparing'].includes(order!.status) &&
+    isDispatchable(order);
+  const claimBlocked =
+    !canClaim &&
+    !isMine &&
+    Boolean(order) &&
+    (isExpired || slotClosed || !['confirmed', 'preparing'].includes(order!.status));
+
+  const paymentLabel =
+    order?.paymentStatus === 'cod'
+      ? 'cash on delivery'
+      : order?.paymentStatus === 'paid'
+        ? 'paid online'
+        : order?.paymentStatus ?? '—';
+  const cashCollected = order?.paymentStatus === 'paid' && order?.paymentProvider === 'cod';
 
   const run = async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -159,17 +239,24 @@ export default function RiderOrderDetailScreen() {
       <Button title="← Back" size="sm" variant="ghost" onPress={() => router.back()} />
       <View style={styles.row}>
         <Text style={[styles.title, { flex: 1 }]}>{order.id}</Text>
-        <StatusBadge status={order.status} label={orderStatusLabel(order.status)} />
+        <StatusBadge status={order.status} label={riderStatusLabel(order.status)} />
       </View>
       <Text style={styles.sub}>
-        Hub {order.hubId ?? '—'} · payment {order.paymentStatus ?? '—'}
+        Pickup hub {order.hubId ?? '—'} · {paymentLabel}
       </Text>
+
+      {isMine && nextStep ? (
+        <View style={[styles.card, styles.nextStep]}>
+          <Text style={styles.cardTitle}>Next step</Text>
+          <Text style={styles.meta}>{nextStep}</Text>
+        </View>
+      ) : null}
 
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Drop-off</Text>
         <Text style={styles.meta}>{order.addressFull || order.addressLabel}</Text>
-        {order.startAt ? (
-          <Text style={styles.meta}>Starts {formatSlot(order.startAt)}</Text>
+        {order.deliveryKm ? (
+          <Text style={styles.meta}>About {order.deliveryKm} km from the hub</Text>
         ) : null}
         <Text style={styles.meta}>ETA {order.etaLabel}</Text>
         {mapsUrl ? (
@@ -182,13 +269,107 @@ export default function RiderOrderDetailScreen() {
         ) : null}
       </View>
 
+      {slot ? (
+        <View style={[styles.card, slot.state !== 'upcoming' && styles.cardWarn]}>
+          <Text style={styles.cardTitle}>Delivery slot</Text>
+          <Text style={styles.emphasis}>{slot.window}</Text>
+          <Text style={slot.state === 'upcoming' ? styles.meta : styles.blocked}>{slot.note}</Text>
+        </View>
+      ) : null}
+
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Customer</Text>
+        {customerName || customerPhone ? (
+          <Text style={styles.emphasis}>
+            {[customerName, prettyPhone(customerPhone)].filter(Boolean).join(' · ')}
+          </Text>
+        ) : (
+          <Text style={styles.meta}>No contact saved on this booking yet.</Text>
+        )}
+        {doorNotes ? <Text style={styles.meta}>Door notes: {doorNotes}</Text> : null}
+        {customerPhone ? (
+          <Button title="Call customer" size="sm" variant="secondary" onPress={callCustomer} />
+        ) : (
+          <>
+            <Text style={styles.meta}>
+              This booking predates saved contact. Look the number up from the customer’s booked
+              address.
+            </Text>
+            <Button
+              title={busy ? 'Looking up…' : 'Get customer number'}
+              size="sm"
+              variant="secondary"
+              disabled={busy}
+              onPress={fetchContact}
+            />
+          </>
+        )}
+      </View>
+
+      {isMine && !slotClosed && !isExpired && rental ? (
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Rental clock</Text>
+
+          {rental.started ? (
+            <>
+              <Text style={styles.emphasis}>
+                Running{rental.hours ? ` · ${rental.hours}h` : ''}
+              </Text>
+              <Text style={styles.meta}>
+                Clock started {rental.startLabel} at handover.
+                {rental.endLabel
+                  ? ` Customer returns ${rental.endLabel} — plan the pickup around that.`
+                  : ' Start the return pickup once the customer is done.'}
+              </Text>
+            </>
+          ) : (
+            <>
+              <Text style={styles.emphasis}>Not started yet</Text>
+              <Text style={styles.meta}>
+                The{rental.hours ? ` ${rental.hours}-hour` : ''} clock starts the moment you enter the
+                customer’s 4-digit handover code at the door — not when you accept the run.
+              </Text>
+              <Text style={styles.meta}>
+                Booked slot: {rental.range}. Reaching late does not cut their time; it starts at
+                handover.
+              </Text>
+            </>
+          )}
+        </View>
+      ) : isMine && (slotClosed || isExpired) ? (
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Slot status</Text>
+          <Text style={styles.blocked}>
+            {isExpired
+              ? 'This order was expired before handover. The rental clock should not be running.'
+              : slot
+                ? slot.note
+                : 'This order’s booked slot has already passed. Ops must review it before anyone delivers it.'}
+          </Text>
+          {slot ? <Text style={styles.meta}>Booked window: {slot.window}</Text> : null}
+        </View>
+      ) : null}
+
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Items</Text>
         {order.items?.map((item, idx) => (
-          <Text key={`${item.name}-${idx}`} style={styles.meta}>
-            {item.name} · {item.durationLabel} · ₹{item.price}
-          </Text>
+          <View key={`${item.name}-${idx}`} style={styles.itemLine}>
+            <Text style={styles.meta}>
+              {item.name} · {item.durationLabel} · ₹{item.price}
+            </Text>
+            {item.extras?.map((extra) => (
+              <Text key={extra} style={styles.meta}>
+                {extra}
+              </Text>
+            ))}
+          </View>
         ))}
+        {order.deliveryFee ? (
+          <Text style={styles.meta}>
+            Delivery ₹{order.deliveryFee}
+            {order.deliveryKm ? ` · ${order.deliveryKm} km` : ''}
+          </Text>
+        ) : null}
         <Text style={[styles.meta, { marginTop: 8 }]}>Total ₹{order.total}</Text>
       </View>
 
@@ -218,24 +399,36 @@ export default function RiderOrderDetailScreen() {
         </View>
       ) : null}
 
-      {isMine &&
-      order.paymentStatus === 'cod' &&
-      ['delivered', 'active', 'returning', 'completed'].includes(order.status) ? (
+      {isMine && (order.paymentStatus === 'cod' || cashCollected) ? (
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Cash to collect</Text>
-          <Text style={styles.meta}>
-            Collect ₹{order.total} from the customer for this booking before you leave.
-          </Text>
-          <Button
-            title={busy ? 'Recording…' : `Mark ₹${order.total} collected`}
-            size="sm"
-            disabled={busy}
-            onPress={() =>
-              void run(async () => {
-                await callCollectCodPayment(order.id);
-              })
-            }
-          />
+          {cashCollected ? (
+            <Text style={styles.meta}>
+              ₹{order.total} collected — payment is settled for this run.
+            </Text>
+          ) : (
+            <>
+              <Text style={styles.meta}>
+                Collect ₹{order.total} in cash from the customer for this booking.
+              </Text>
+              {['delivered', 'active', 'returning', 'completed'].includes(order.status) ? (
+                <Button
+                  title={busy ? 'Recording…' : `Mark ₹${order.total} collected`}
+                  size="sm"
+                  disabled={busy}
+                  onPress={() =>
+                    void run(async () => {
+                      await callCollectCodPayment(order.id);
+                    })
+                  }
+                />
+              ) : (
+                <Text style={styles.meta}>
+                  The "collected" button unlocks once the handover code is verified.
+                </Text>
+              )}
+            </>
+          )}
         </View>
       ) : null}
 
@@ -248,6 +441,14 @@ export default function RiderOrderDetailScreen() {
             disabled={busy}
             onPress={() => void run(() => accept(order.id))}
           />
+        ) : claimBlocked ? (
+          <Text style={styles.blocked}>
+            {isExpired
+              ? 'This order’s delivery slot has expired. A rider can’t accept it — ops needs to review it first.'
+              : slotClosed
+                ? 'This order’s delivery slot has already passed. A rider can’t accept it directly — ops needs to confirm a late dispatch first.'
+                : 'This order isn’t open for acceptance right now.'}
+          </Text>
         ) : null}
         {isMine && next.length > 0
           ? next.map((action) => {
@@ -285,7 +486,13 @@ export default function RiderOrderDetailScreen() {
                     style={styles.otpInput}
                   />
                   <Button
-                    title={busy ? 'Verifying…' : isPickup ? 'Verify & complete order' : 'Verify & mark delivered'}
+                    title={
+                      busy
+                        ? 'Verifying…'
+                        : isPickup
+                          ? 'Verify & complete order'
+                          : 'Verify handover code'
+                    }
                     size="sm"
                     disabled={busy || !codeReady}
                     onPress={() =>
@@ -324,8 +531,13 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   cardTitle: { fontFamily: fonts.heading, fontSize: typeScale.title, color: colors.primaryText },
+  emphasis: { fontFamily: fonts.heading, fontSize: typeScale.body, color: colors.primaryText },
+  nextStep: { borderColor: colors.playportOrange },
+  cardWarn: { borderColor: colors.playportOrange },
+  itemLine: { gap: 2 },
   meta: { fontFamily: fonts.body, fontSize: typeScale.small, color: colors.secondaryText, lineHeight: 18 },
   error: { fontFamily: fonts.body, color: colors.danger, fontSize: typeScale.body },
+  blocked: { fontFamily: fonts.body, color: colors.danger, fontSize: typeScale.body, lineHeight: 18 },
   otpBlock: {
     gap: 8,
     borderWidth: 1,

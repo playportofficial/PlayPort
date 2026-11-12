@@ -1,3 +1,5 @@
+import { formatSlot, formatSlotTime } from './serviceHours';
+
 export function formatINR(amount: number): string {
   return `₹${amount.toLocaleString('en-IN')}`;
 }
@@ -31,6 +33,46 @@ export function formatReturnLabel(endAt?: string | null, fallback?: string): str
   return `Returns ${formatted}`;
 }
 
+/**
+ * The rental clock for a run card. Until handover the stored startAt/endAt are
+ * only the booked slot — the real clock starts when the rider enters the
+ * customer's 4-digit code, so an en-route rider must never read it as running.
+ */
+export interface RentalWindow {
+  /** "Today, 2:12 pm" — booked start, or the live start once handover moved it. */
+  startLabel: string;
+  /** "8:12 pm" — end time, null when the order carries no end. */
+  endLabel: string | null;
+  /** "Today, 2:12 pm – 8:12 pm" */
+  range: string;
+  /** Whole booked hours, e.g. 6. */
+  hours: number | null;
+  /** Handover verified → the clock is running. */
+  started: boolean;
+}
+
+export function rentalWindow(order: {
+  startAt?: string;
+  endAt?: string;
+  deliveredAt?: string;
+}): RentalWindow | null {
+  if (!order.startAt) return null;
+  const start = new Date(order.startAt);
+  if (Number.isNaN(start.getTime())) return null;
+  const end = order.endAt ? new Date(order.endAt) : null;
+  const hasEnd = end != null && !Number.isNaN(end.getTime());
+  const hours = hasEnd ? Math.round((end.getTime() - start.getTime()) / 3_600_000) : null;
+  const startLabel = formatSlot(order.startAt);
+  const endLabel = hasEnd ? formatSlotTime(order.endAt as string) : null;
+  return {
+    startLabel,
+    endLabel,
+    range: endLabel ? `${startLabel} – ${endLabel}` : startLabel,
+    hours,
+    started: Boolean(order.deliveredAt),
+  };
+}
+
 export function orderStatusLabel(status: string): string {
   switch (status) {
     case 'pending_payment':
@@ -56,6 +98,14 @@ export function orderStatusLabel(status: string): string {
     default:
       return status.toUpperCase();
   }
+}
+
+/**
+ * Rider-facing status label. "active" is really "the customer is using the kit",
+ * which is what the rider cares about after handover.
+ */
+export function riderStatusLabel(status: string): string {
+  return status === 'active' ? 'CUSTOMER USING KIT' : orderStatusLabel(status);
 }
 
 export function generateOrderId(): string {

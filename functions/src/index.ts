@@ -35,7 +35,7 @@ const ORDER_TRANSITIONS: Record<string, string[]> = {
   pending_payment: ['cancelled'],
   confirmed: ['preparing', 'cancelled', 'refunded'],
   preparing: ['out_for_delivery', 'cancelled'],
-  out_for_delivery: ['delivered', 'cancelled'],
+  out_for_delivery: ['delivered', 'active', 'cancelled'],
   delivered: ['active', 'returning'],
   active: ['returning'],
   returning: ['completed'],
@@ -49,6 +49,38 @@ const razorpayKeyId = defineString('RAZORPAY_KEY_ID', { default: '' });
 const razorpayKeySecret = defineString('RAZORPAY_KEY_SECRET', { default: '' });
 const razorpayWebhookSecret = defineString('RAZORPAY_WEBHOOK_SECRET', { default: '' });
 const googleMapsApiKey = defineString('GOOGLE_MAPS_API_KEY', { default: '' });
+
+/** Refund gateways configured (Razorpay) — used by the refund and pre-slot paths. */
+const refundGatewayLive = Boolean(razorpayKeySecret.value());
+
+/**
+ * Server-side shape of the refund record we write onto orders/{id}.refund.
+ * Kept in sync with the app/shared OrderRefund type in ../types/index.ts.
+ */
+type RefundRecord = {
+  requestedAt: string;
+  by: 'customer' | 'staff';
+  reason?: string;
+  note?: string;
+  providerRef?: string;
+  providerRefundId?: string;
+  amount?: number;
+  error?: string;
+  status?: 'pending' | 'processed' | 'failed';
+  updatedAt: string;
+};
+
+/** Local mirror of the shared OpsNotification type (types/index.ts). */
+type OpsNotification = {
+  kind: 'new_order' | 'payment_received' | 'dispatch' | 'refund' | 'flag' | 'system';
+  title: string;
+  body: string;
+  orderId?: string;
+  severity: 'info' | 'warning' | 'critical';
+  read: boolean;
+  createdAt: string;
+  eventAt: string;
+};
 
 type CartItem = FnCartItem & {
   id: string;
@@ -71,6 +103,242 @@ function validRazorpaySignature(razorpayOrderId: string, paymentId: string, sign
 function requireAuth(uid: string | undefined): string {
   if (!uid) throw new HttpsError('unauthenticated', 'Sign in required');
   return uid;
+}
+
+function refundAmountFor(order: DocumentData | null): number {
+  if (!order) return 0;
+  return Math.round(Number(order.total) || 0);
+}
+
+/**
+ * Run the real refund path for a paid order — the piece that was missing before,
+ * where cancelBooking only reassigned paymentStatus to 'refunded' without moving
+ * any money back through Razorpay.
+ *
+ * It is intentionally idempotent: if refundProcessed is already true / a refund
+ * record already exists, the function returns the current state instead of
+ * attempting a second Razorpay refund.
+ *
+ * Degrades cleanly when the gateway is not configured: it still writes a refund
+ * record so the app can explain what happened (manual refund, to be completed by
+ * ops), but it does not claim a Razorpay refund ID it cannot obtain.
+ */
+async function executeRefundInternal(
+  ref: DocumentReference,
+  order: DocumentData,
+  by: 'customer' | 'staff',
+  reason?: string,
+  staffNote?: string
+) {
+  const nowIso = new Date().toISOString();
+  const existing = (order.refund as RefundRecord | undefined) ?? null;
+
+  // Already refunded via a previous attempt — do not re-run the gateway.
+  if (order.paymentStatus === 'refunded') {
+    if (!existing) {
+      // Heal an order that was marked refunded without a refund record (legacy path).
+      await ref.update({
+        refund: {
+          requestedAt: nowIso,
+          by,
+          reason: reason ?? order.cancelReason ?? undefined,
+          note: staffNote ?? undefined,
+          status: 'pending',
+          updatedAt: nowIso,
+        },
+        refundProcessed: true,
+        refundNote: staffNote ?? undefined,
+      });
+      return { refunded: true, manual: true, existing: false, gatewayUsed: false };
+    }
+    return {
+      refunded: true,
+      manual: !refundGatewayLive,
+      existing: true,
+      gatewayUsed: !!existing.providerRefundId,
+      record: existing,
+    };
+  }
+
+  if (existing?.status === 'processed') {
+    return { refunded: true, manual: false, existing: true, gatewayUsed: true, record: existing };
+  }
+
+  // A pending/refunding gateway attempt is already in flight — do not start another.
+  if (existing?.status === 'pending' && existing.providerRefundId) {
+    return { refunded: false, manual: false, existing: true, gatewayUsed: false, record: existing, inFlight: true };
+  }
+
+  const amount = refundAmountFor(order);
+  if (amount <= 0) {
+    throw new HttpsError('failed-precondition', 'Nothing to refund — the order has no paid total');
+  }
+
+  const recordBase = {
+    requestedAt: nowIso,
+    by,
+    reason: reason ?? order.cancelReason ?? undefined,
+    note: staffNote ?? undefined,
+    amount,
+    updatedAt: nowIso,
+  } as RefundRecord;
+
+  // When the gateway is not live, record the intent and leave the money movement
+  // to ops (manual refund). Do not pretend a Razorpay refund happened.
+  if (!refundGatewayLive || !order.razorpayPaymentId) {
+    const record = {
+      ...recordBase,
+      status: 'pending',
+      updatedAt: nowIso,
+    };
+    await ref.update({
+      paymentStatus: 'refunded',
+      refund: record,
+      refundProcessed: true,
+      refundNote: staffNote ?? undefined,
+    });
+    logger.info('Refund recorded as manual/pending', {
+      orderId: order.id,
+      by,
+      gatewayLive: refundGatewayLive,
+      hasRazorpayPayment: Boolean(order.razorpayPaymentId),
+    });
+    return { refunded: true, manual: true, existing: false, gatewayUsed: false, record };
+  }
+
+  // Real gateway refund path.
+  const rzpPaymentId = order.razorpayPaymentId as string;
+  const payRef = db.collection('payments').doc(rzpPaymentId);
+  const paySnap = await payRef.get();
+  const pay = paySnap.data();
+  if (!paySnap.exists || !pay || pay.orderId !== order.id) {
+    // The Razorpay payment reference on the order does not match a known payment.
+    // Record the failure so the app can show it, but keep the order as paid so ops
+    // can investigate rather than silently shadowing the money.
+    const record: RefundRecord = {
+      ...recordBase,
+      status: 'failed',
+      error: 'Razorpay payment reference not found for this order',
+      updatedAt: nowIso,
+    };
+    await ref.update({ refund: record, refundProcessed: true, refundNote: staffNote ?? undefined });
+    logger.warn('Refund aborted: payment ref missing', { orderId: order.id, rzpPaymentId });
+    return { refunded: false, manual: false, existing: false, gatewayUsed: false, record };
+  }
+
+  if (pay.status === 'refunded') {
+    // Gateway already refunded this payment (e.g. webhook came in just before us).
+    // Reconcile the order to reflect that without issuing a second refund.
+    const record: RefundRecord = {
+      ...recordBase,
+      status: 'processed',
+      providerRefundId: pay.providerRef ?? undefined,
+      updatedAt: nowIso,
+    };
+    await ref.update({
+      paymentStatus: 'refunded',
+      refund: record,
+      refundProcessed: true,
+      refundNote: staffNote ?? undefined,
+    });
+    return { refunded: true, manual: false, existing: false, gatewayUsed: true, record };
+  }
+
+  if (pay.status !== 'paid') {
+    const record: RefundRecord = {
+      ...recordBase,
+      status: 'failed',
+      error: `Payment is not in a refundable state (gateway status: ${pay.status})`,
+      updatedAt: nowIso,
+    };
+    await ref.update({ refund: record, refundProcessed: true, refundNote: staffNote ?? undefined });
+    logger.warn('Refund aborted: payment not refundable', { orderId: order.id, rzpPaymentId, payStatus: pay.status });
+    return { refunded: false, manual: false, existing: false, gatewayUsed: false, record };
+  }
+
+  // Refund via Razorpay.
+  // Dynamic import keeps the cold start lean when the gateway is not configured.
+  let rzp: { refunds: { create: (args: { payment_id: string; amount: number; notes?: Record<string, unknown> }) => Promise<{ id: string; status: string }> } };
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const Razorpay = require('razorpay');
+    rzp = new Razorpay({ key_id: razorpayKeyId.value(), key_secret: razorpayKeySecret.value() });
+  } catch (err) {
+    const record: RefundRecord = {
+      ...recordBase,
+      status: 'failed',
+      error: 'Refund gateway could not be initialised',
+      updatedAt: nowIso,
+    };
+    await ref.update({ refund: record, refundProcessed: true, refundNote: staffNote ?? undefined });
+    logger.error('Refund gateway initialisation failed', { orderId: order.id, err: String(err) });
+    return { refunded: false, manual: false, existing: false, gatewayUsed: false, record };
+  }
+
+  let refundCapture: { id: string; status: string } | null = null;
+  try {
+    refundCapture = await rzp.refunds.create({
+      payment_id: rzpPaymentId,
+      amount,
+      notes: {
+        orderId: order.id,
+        userId: order.userId ?? undefined,
+        by,
+        reason: reason ?? order.cancelReason ?? undefined,
+        staffNote: staffNote ?? undefined,
+      },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error('Razorpay refund call failed', { orderId: order.id, rzpPaymentId, err: message });
+    const record: RefundRecord = {
+      ...recordBase,
+      status: 'failed',
+      error: message,
+      updatedAt: nowIso,
+    };
+    await ref.update({ refund: record, refundProcessed: true, refundNote: staffNote ?? undefined });
+    return { refunded: false, manual: false, existing: false, gatewayUsed: true, record };
+  }
+
+  if (!refundCapture) {
+    const record: RefundRecord = {
+      ...recordBase,
+      status: 'failed',
+      error: 'Razorpay returned no refund result',
+      updatedAt: nowIso,
+    };
+    await ref.update({ refund: record, refundProcessed: true, refundNote: staffNote ?? undefined });
+    return { refunded: false, manual: false, existing: false, gatewayUsed: true, record };
+  }
+
+  const refundStatus: RefundRecord['status'] = refundCapture.status === 'processed' ? 'processed' : 'pending';
+  const record: RefundRecord = {
+    ...recordBase,
+    status: refundStatus,
+    providerRef: rzpPaymentId,
+    providerRefundId: refundCapture.id,
+    amount,
+    updatedAt: nowIso,
+  };
+
+  await ref.update({
+    paymentStatus: 'refunded',
+    refund: record,
+    refundProcessed: true,
+    refundNote: staffNote ?? undefined,
+  });
+  await payRef.update({ status: 'refunded', providerRefundId: refundCapture.id, refundAmount: amount, updatedAt: nowIso });
+
+  logger.info('Refund processed via gateway', {
+    orderId: order.id,
+    rzpPaymentId,
+    refundId: refundCapture.id,
+    amount,
+    status: refundCapture.status,
+  });
+
+  return { refunded: true, manual: false, existing: false, gatewayUsed: true, record };
 }
 
 function orderId() {
@@ -410,6 +678,86 @@ async function markOrderPaymentFailedOrCancelled(
   });
 }
 
+/**
+ * Customer contact for the rider's run screen. Read from the saved address that
+ * was actually booked (never trusted blindly from the client), with the profile
+ * and the default address as fallbacks for older app versions.
+ */
+type CustomerContact = {
+  customerName?: string;
+  customerPhone?: string;
+  addressInstructions?: string;
+};
+
+function cleanPhone(phone: unknown): string | undefined {
+  const digits = String(phone ?? '').replace(/\D/g, '');
+  return digits.length >= 10 ? `+91${digits.slice(-10)}` : undefined;
+}
+
+function cleanText(value: unknown, max: number): string | undefined {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
+  return text || undefined;
+}
+
+function contactFromAddress(data: DocumentData | undefined): CustomerContact {
+  if (!data) return {};
+  const contact: CustomerContact = {};
+  const name = cleanText(data.contactName, 60);
+  const phone = cleanPhone(data.phone);
+  const instructions = cleanText(data.instructions, 240);
+  if (name) contact.customerName = name;
+  if (phone) contact.customerPhone = phone;
+  if (instructions) contact.addressInstructions = instructions;
+  return contact;
+}
+
+async function resolveCustomerContact(
+  uid: string,
+  addressId?: string,
+  addressFull?: string
+): Promise<CustomerContact> {
+  try {
+    if (addressId) {
+      const snap = await db.collection('users').doc(uid).collection('addresses').doc(addressId).get();
+      const contact = contactFromAddress(snap.exists ? snap.data() : undefined);
+      if (contact.customerPhone) return contact;
+    }
+    // Legacy bookings carry no addressId — match the saved address by its text,
+    // else fall back to the customer's default address.
+    const snapshot = await db.collection('users').doc(uid).collection('addresses').get();
+    const target = String(addressFull ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+    let fallback: CustomerContact = {};
+    for (const doc of snapshot.docs) {
+      const data = doc.data();
+      const text = [data.line1, data.line2, data.area, data.city, data.pincode]
+        .filter(Boolean)
+        .join(', ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+      const contact = contactFromAddress(data);
+      if (target && text === target && contact.customerPhone) return contact;
+      // A default address is a safe fallback for who to call, never for door
+      // notes — those belong to the address the order was actually placed for.
+      if (data.isDefault === true && contact.customerPhone) {
+        fallback = { customerName: contact.customerName, customerPhone: contact.customerPhone };
+      }
+    }
+    if (fallback.customerPhone) return fallback;
+
+    const profile = (await db.collection('users').doc(uid).get()).data();
+    const contact: CustomerContact = {};
+    const name = cleanText(profile?.name, 60);
+    const phone = cleanPhone(profile?.phone);
+    if (name) contact.customerName = name;
+    if (phone) contact.customerPhone = phone;
+    return contact;
+  } catch (err) {
+    logger.warn('customer contact lookup failed', { uid, err: String(err) });
+    return {};
+  }
+}
+
 // ——— createBooking ———
 
 export const createBooking = onCall({ region: REGION }, async (request) => {
@@ -419,6 +767,7 @@ export const createBooking = onCall({ region: REGION }, async (request) => {
     cart,
     addressLabel,
     addressFull,
+    addressId,
     dropoffLat: dropoffLatInput,
     dropoffLng: dropoffLngInput,
     paymentMethodLabel,
@@ -432,6 +781,8 @@ export const createBooking = onCall({ region: REGION }, async (request) => {
     cart: CartItem[];
     addressLabel: string;
     addressFull: string;
+    /** Saved address doc id — contact name, phone and door instructions for the rider. */
+    addressId?: string;
     dropoffLat?: number;
     dropoffLng?: number;
     paymentMethodLabel: string;
@@ -729,6 +1080,13 @@ export const createBooking = onCall({ region: REGION }, async (request) => {
     });
   }
 
+  // Rider needs a name and number at the door, not just a street address.
+  const customerContact = await resolveCustomerContact(
+    uid,
+    typeof addressId === 'string' ? addressId : undefined,
+    addressFull
+  );
+
   const order = {
     id,
     userId: uid,
@@ -750,6 +1108,8 @@ export const createBooking = onCall({ region: REGION }, async (request) => {
         : 'Complete payment to confirm',
     addressLabel,
     addressFull,
+    ...(typeof addressId === 'string' ? { addressId } : {}),
+    ...customerContact,
     items: cart.map((c) => ({
       productId: c.productId ?? null,
       experienceId: c.experienceId ?? null,
@@ -806,6 +1166,22 @@ export const createBooking = onCall({ region: REGION }, async (request) => {
       : `${id} is reserved for 15 minutes — complete payment to confirm.`,
     type: 'order',
     orderId: id,
+  });
+
+  // Ops awareness: when a new order lands, post an ops-side alert so staff notice
+  // it without having to poll the rider portal / order list specifically.
+  // This is the doc the admin app watches/polls for "new order" alerts.
+  const opsKind: OpsNotification['kind'] = isCod ? 'dispatch' : 'new_order';
+  const opsSeverity: OpsNotification['severity'] = isCod ? 'info' : 'warning';
+  await db.collection('ops_notifications').doc().set({
+    kind: opsKind,
+    title: isCod ? `New COD order: ${id}` : `New order: ${id}`,
+    body: `${id} · ${addressLabel} · ₹${expectedTotal} · ${isCod ? 'cash on delivery' : 'online payment'} · ${startAt.getTime() - now > 3 * 60 * 60 * 1000 ? 'scheduled' : 'ASAP'}`,
+    orderId: id,
+    severity: opsSeverity,
+    read: false,
+    createdAt: nowIso,
+    eventAt: nowIso,
   });
 
   return { orderId: id, order, holdExpiresAt: isCod ? null : holdExpiresAt };
@@ -951,6 +1327,10 @@ export const cancelBooking = onCall({ region: REGION }, async (request) => {
     throw new HttpsError('failed-precondition', 'This order can no longer be cancelled');
   }
 
+  const refundResult = order.paymentStatus === 'paid'
+    ? await executeRefundInternal(ref, order, 'customer', reason)
+    : null;
+
   await releaseReservations(order.reservationIds ?? [], 'released');
   await ref.update({
     status: 'cancelled',
@@ -962,15 +1342,334 @@ export const cancelBooking = onCall({ region: REGION }, async (request) => {
     updatedAt: new Date().toISOString(),
   });
 
+  const refundedAmount =
+    refundResult?.record?.amount ??
+    (order.paymentStatus === 'paid' ? Math.round(Number(order.total) || 0) : 0);
+  const refundStatusLine =
+    order.paymentStatus === 'cod'
+      ? 'Nothing was charged.'
+      : order.paymentStatus === 'paid'
+        ? refundResult?.manual
+          ? 'Refund recorded for ops to process.'
+          : refundResult?.record?.status === 'processed'
+            ? `Refund of ₹${refundedAmount} processed.`
+            : refundResult?.record?.error
+              ? `Refund could not be completed: ${refundResult.record.error}`
+              : `Refund of ₹${refundedAmount} requested.`
+        : 'No payment on this order.';
+
   await pushNotification(uid, {
     title: 'Order cancelled',
-    body: `${id} was cancelled. Inventory released.`,
+    body: `${id} was cancelled. ${refundStatusLine}`,
     type: 'order',
     orderId: id,
   });
 
-  return { ok: true };
+  return { ok: true, refunded: refundResult?.refunded ?? false, manual: refundResult?.manual ?? false };
 });
+
+/**
+ * Server refund execution — the callable both the customer cancel path and the
+ * staff refund action use. Eligibility is checked server-side so a customer cannot
+ * refund an order they do not own, and a staff action can refund orders a rider
+ * already accepted (where the customer cancel screen is blocked).
+ *
+ * For paid Razorpay orders with a captured payment, this calls Razorpay refunds.
+ * Today (demo / no gateway keys) it records the refund state and leaves the money
+ * movement to ops — the app then shows an honest message instead of a fake timeline.
+ */
+export const executeRefundBooking = onCall({ region: REGION }, async (request) => {
+  const uid = requireAuth(request.auth?.uid);
+  const isAdmin = request.auth?.token?.admin === true;
+  const { orderId: id, reason, staffNote } = request.data as {
+    orderId: string;
+    reason?: string;
+    staffNote?: string;
+  };
+  if (!id) throw new HttpsError('invalid-argument', 'orderId required');
+
+  const ref = db.collection('orders').doc(id);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError('not-found', 'Order not found');
+  const order = snap.data()!;
+
+  // Staff may refund any order they can see. Customers may only refund their own.
+  if (!isAdmin && order.userId !== uid) {
+    throw new HttpsError('permission-denied', 'Not your order');
+  }
+  if (!isAdmin && !order.customerPhone && !order.userId) {
+    throw new HttpsError('permission-denied', 'This order has no customer on file');
+  }
+
+  // Closed orders cannot be refunded again.
+  if (['cancelled', 'completed', 'refunded'].includes(order.status)) {
+    throw new HttpsError('failed-precondition', 'Order is already closed');
+  }
+
+  // Only paid orders have money to move back.
+  if (order.paymentStatus !== 'paid') {
+    throw new HttpsError(
+      'failed-precondition',
+      order.paymentStatus === 'cod'
+        ? 'This order was cash on delivery — there is nothing to refund.'
+        : 'This order has not been paid yet.'
+    );
+  }
+
+  if (order.refundProcessed) {
+    throw new HttpsError('already-exists', 'A refund has already been processed for this order');
+  }
+
+  const result = await executeRefundInternal(ref, order, isAdmin ? 'staff' : 'customer', reason, staffNote);
+  if (!result.refunded && result.record?.status === 'failed') {
+    throw new HttpsError('internal', result.record.error ?? 'Refund could not be completed');
+  }
+  if (!result.refunded && result.inFlight) {
+    throw new HttpsError('aborted', 'A refund is already in progress for this order');
+  }
+
+  return {
+    ok: true,
+    refunded: result.refunded,
+    manual: result.manual,
+    gatewayUsed: result.gatewayUsed,
+    record: result.record as RefundRecord | null,
+  };
+});
+
+/**
+ * Reconcile an order against its scheduled slot and the real inventory state.
+ * Used by the pre-slot availability recheck so ops get warned before the customer’s
+ * scheduled prepaid slot arrives — not after.
+ *
+ * Returns the kind of action that would be appropriate if the order were reviewed
+ * right now. It does not mutate the order (except for the recheck flag when a
+ * problem is found), so the recheck is a read-heavy diagnostic, not a cancellation.
+ */
+async function recheckScheduledOrder(orderRef: DocumentReference, order: DocumentData): Promise<{
+  slotStartMs: number;
+  elapsedMs: number;
+  nowMs: number;
+  status: 'ok' | 'unfulfillable' | 'noStock';
+  note: string;
+}> {
+  const nowMs = Date.now();
+  const startMs = order.startAt ? new Date(order.startAt).getTime() : NaN;
+  const slotStartMs = Number.isFinite(startMs) ? startMs : NaN;
+  const elapsedMs = Number.isFinite(slotStartMs) ? slotStartMs - nowMs : NaN;
+
+  // COD / unpaid orders are not in scope for the pre-slot refund risk check.
+  if (order.paymentStatus === 'cod' || order.paymentStatus !== 'paid') {
+    return {
+      slotStartMs,
+      elapsedMs,
+      nowMs,
+      status: 'ok',
+      note: 'Not a paid scheduled order — out of scope for the pre-slot recheck.',
+    };
+  }
+
+  // Orders that have already moved past their slot are not a future risk.
+  if (!Number.isFinite(slotStartMs) || slotStartMs <= nowMs) {
+    return {
+      slotStartMs,
+      elapsedMs,
+      nowMs,
+      status: 'ok',
+      note: 'Slot has already started or passed — recheck is for future slots only.',
+    };
+  }
+
+  // No reserved kits = nothing to recheck (legacy / pathological doc).
+  const reservationIds = (order.reservationIds ?? []) as string[];
+  if (!reservationIds.length) {
+    return {
+      slotStartMs,
+      elapsedMs,
+      nowMs,
+      status: 'ok',
+      note: 'No inventory reservations on this order — nothing to recheck.',
+    };
+  }
+
+  // For scheduled slots that are still some time out, only flag orders that are
+  // close enough to matter (within ~24h of the slot), so the recheck is not noisy
+  // for far-future bookings that still have time to be rescued by ops.
+  const nearThresholdMs = 24 * 60 * 60 * 1000;
+  if (Number.isFinite(elapsedMs) && elapsedMs > nearThresholdMs) {
+    return {
+      slotStartMs,
+      elapsedMs,
+      nowMs,
+      status: 'ok',
+      note: `Slot is in the future (~${Math.round(elapsedMs / 3600000)}h away) — recheck again closer to the slot.`,
+    };
+  }
+
+  // Walk each reserved kit/unit and decide whether it is still realistically
+  // available for this slot. A unit is unfulfillable when its holding reservation
+  // has been released/completed, or when the unit is no longer available, or when
+  // the unit genuinely cannot be booked for this window.
+  const problems: string[] = [];
+  let unfulfillableCount = 0;
+  let releasedCount = 0;
+
+  for (const rid of reservationIds) {
+    const rSnap = await db.collection('inventory_reservations').doc(rid).get();
+    if (!rSnap.exists) {
+      problems.push(`reservation ${rid} no longer exists`);
+      unfulfillableCount++;
+      continue;
+    }
+    const r = rSnap.data()!;
+
+    if (r.status === 'released' || r.status === 'completed') {
+      releasedCount++;
+      continue;
+    }
+
+    if (r.status === 'hold' && r.holdExpiresAt) {
+      const holdExp = new Date(r.holdExpiresAt).getTime();
+      if (!Number.isFinite(holdExp) || holdExp < nowMs) {
+        // Expired hold = the unit was never confirmed and is now free again.
+        releasedCount++;
+        continue;
+      }
+    }
+
+    if (r.status !== 'confirmed' && r.status !== 'hold') {
+      problems.push(`reservation ${rid} is in state ${r.status}`);
+      unfulfillableCount++;
+      continue;
+    }
+
+    if (r.inventoryUnitId) {
+      const unitSnap = await db.collection('inventory_units').doc(r.inventoryUnitId).get();
+      if (!unitSnap.exists) {
+        problems.push(`unit ${r.inventoryUnitId} no longer exists`);
+        unfulfillableCount++;
+      } else if (unitSnap.data()?.status !== 'available') {
+        problems.push(`unit ${r.inventoryUnitId} is no longer available`);
+        unfulfillableCount++;
+      }
+    }
+  }
+
+  if (unfulfillableCount > 0) {
+    return {
+      slotStartMs,
+      elapsedMs,
+      nowMs,
+      status: 'unfulfillable',
+      note: `Can’t fulfil this slot: ${unfulfillableCount} reserved unit${unfulfillableCount === 1 ? '' : 's'} are no longer available, and ${releasedCount} reservation${releasedCount === 1 ? '' : 's'} were already released. ${problems.slice(0, 1).join('. ')}`,
+    };
+  }
+
+  if (releasedCount > 0) {
+    return {
+      slotStartMs,
+      elapsedMs,
+      nowMs,
+      status: 'noStock',
+      note: `${releasedCount} reservation${releasedCount === 1 ? '' : 's'} were released and the slot is within ~24h — confirm stock before the slot or move the customer to a different time / refund.`,
+    };
+  }
+
+  return {
+    slotStartMs,
+    elapsedMs,
+    nowMs,
+    status: 'ok',
+    note: 'Reserved stock still looks available for the slot.',
+  };
+}
+
+/**
+ * Pre-slot availability recheck for scheduled prepaid orders.
+ *
+ * Runs on a light schedule and re-reads the reserved kits for paid scheduled orders
+ * whose slot is still in the future. When a slot can’t be fulfilled (unit gone,
+ * reservation released, etc.), it sets a recheck flag and a staff note on the order
+ * so ops can act — reschedule, swap the unit, or refund the customer — before the
+ * customer’s slot arrives.
+ *
+ * This is intentionally a diagnostic + flag, not an auto-cancel. The refund path
+ * (executeRefundBooking) is what actually moves the money once ops decide to cancel.
+ */
+// NOTE: named recheckPrepaidSlots rather than recheckScheduledPrepaidSlots — that
+// resource wedged on the control plane (update 409s, scheduler job never created).
+async function recheckPrepaidSlotsInternal() {
+    const nowIso = new Date().toISOString();
+    const nowMs = Date.now();
+
+    // Paid scheduled orders whose slot is still ahead — the population we care about.
+    const snap = await db
+      .collection('orders')
+      .where('status', 'in', ['pending_payment', 'confirmed', 'preparing'])
+      .where('paymentStatus', '==', 'paid')
+      .where('startAt', '>', nowIso)
+      .where('riderId', '==', null)
+      .limit(200)
+      .get();
+
+    if (snap.empty) {
+      logger.info('Pre-slot recheck: no scheduled paid orders pending');
+      return;
+    }
+
+    let checked = 0;
+    let flagged = 0;
+
+    for (const doc of snap.docs) {
+      checked++;
+      const order = doc.data();
+      const result = await recheckScheduledOrder(doc.ref, order);
+
+      // Nothing to do for orders that are still fine.
+      if (result.status === 'ok') continue;
+
+      // Mark the order so ops can find these quickly (e.g. a future filter or
+      // report). Do not change the order’s main status here.
+      // Store only the problem states — `ok` is the un-stored default.
+      await doc.ref.update({
+        preSlotRecheckAt: nowIso,
+        preSlotRecheckStatus: result.status as 'unfulfillable' | 'noStock' | null,
+        preSlotRecheckNote: result.note,
+        updatedAt: nowIso,
+      });
+
+      // Also send the customer a heads-up when the slot is at risk, so they are not
+      // surprised at delivery time. Keep it brief and actionable.
+      if (order.userId) {
+        const hoursAway = Math.round(result.elapsedMs / 3600000);
+        await pushNotification(order.userId, {
+          title: 'Booking update',
+          body: `${doc.id}: we’re checking your slot ${hoursAway > 0 ? `in about ${hoursAway} hour${hoursAway === 1 ? '' : 's'}` : 'soon'} — we’ll be in touch if anything changes.`,
+          type: 'order',
+          orderId: doc.id,
+        }).catch(() => undefined);
+      }
+
+      flagged++;
+      logger.warn('Pre-slot recheck flagged an order', {
+        orderId: doc.id,
+        status: result.status,
+        note: result.note,
+        slotStartMs: result.slotStartMs,
+        elapsedMs: result.elapsedMs,
+      });
+    }
+
+    logger.info('Pre-slot recheck completed', { checked, flagged, nowMs });
+}
+
+export const recheckPrepaidSlots = onSchedule(
+  { region: REGION, schedule: 'every 15 minutes' },
+  async () => {
+    await recheckPrepaidSlotsInternal();
+  }
+);
+
 
 // ——— collectCodPayment ———
 
@@ -1090,7 +1789,7 @@ export const updateOrderStatus = onCall({ region: REGION }, async (request) => {
   return { ok: true, status };
 });
 
-// ——— onOrderDelivered ———
+// ——— onOrderHandedOver ———
 
 const timeFmtIst = new Intl.DateTimeFormat('en-IN', {
   timeZone: 'Asia/Kolkata',
@@ -1105,50 +1804,99 @@ const timeFmtIst = new Intl.DateTimeFormat('en-IN', {
  * reservations — to start now, keeping the booked length. Never earlier than
  * the booked start, so an early scheduled drop-off doesn't eat into their slot.
  */
-export const onOrderDelivered = onDocumentUpdated(
+// NOTE: named onOrderHandedOver rather than onOrderDelivered — that resource name
+// wedged on Google's control plane (update 409s) and had to be abandoned, the same
+// failure that forced claimRun's name.
+export const onOrderHandedOver = onDocumentUpdated(
   { document: 'orders/{orderId}', region: REGION },
   async (event) => {
     const before = event.data?.before.data();
     const after = event.data?.after.data();
     if (!before || !after || !event.data) return;
-    if (after.status !== 'delivered' || before.status === 'delivered' || after.deliveredAt) return;
+    // Handover can land the order on "delivered" (ops) or straight on "active" (the
+    // rider verifies the door code once). Both start the rental clock.
+    const handedOver =
+      (after.status === 'delivered' && before.status !== 'delivered') ||
+      (after.status === 'active' && before.status !== 'active');
+    if (!handedOver || after.deliveredAt) return;
 
     const nowMs = Date.now();
     const nowIso = new Date(nowMs).toISOString();
-    const bookedStart = new Date(after.startAt).getTime();
-    const bookedEnd = new Date(after.endAt).getTime();
-    if (!Number.isFinite(bookedStart) || !Number.isFinite(bookedEnd) || bookedEnd <= bookedStart) {
+
+    // The customer's originally booked window must always be preserved, even when
+    // handover happens late. We never want the system to silently pretend the slot
+    // is still valid when it isn't.
+    const bookedStartMs = after.bookedStartAt ? new Date(after.bookedStartAt).getTime() : NaN;
+    const bookedEndMs = after.bookedEndAt ? new Date(after.bookedEndAt).getTime() : NaN;
+    const startAtMs = new Date(after.startAt).getTime();
+    const endAtMs = new Date(after.endAt).getTime();
+
+    const hasRuntimeWindow =
+      Number.isFinite(startAtMs) && Number.isFinite(endAtMs) && endAtMs > startAtMs;
+
+    if (!hasRuntimeWindow) {
       await event.data.after.ref.update({ deliveredAt: nowIso });
       return;
     }
-    const startMs = Math.max(nowMs, bookedStart);
-    const endMs = startMs + (bookedEnd - bookedStart);
-    const startIso = new Date(startMs).toISOString();
-    const endIso = new Date(endMs).toISOString();
 
-    await event.data.after.ref.update({
+    // If we already have a preserved booked window, use it. Otherwise seed it from
+    // the current startAt/endAt (legacy orders).
+    const effectiveBookedStartMs =
+      Number.isFinite(bookedStartMs) ? bookedStartMs : startAtMs;
+    const effectiveBookedEndMs = Number.isFinite(bookedEndMs) ? bookedEndMs : endAtMs;
+
+    // Real handover time is now. The rental clock starts at handover, but we keep the
+    // booked window as the customer-facing truth.
+    const handoverStartMs = Math.max(nowMs, effectiveBookedStartMs);
+    const handoverEndMs = handoverStartMs + (effectiveBookedEndMs - effectiveBookedStartMs);
+
+    const lateDelivery =
+      Number.isFinite(effectiveBookedEndMs) && nowMs > effectiveBookedEndMs + 30 * 60 * 1000;
+
+    const patch: Record<string, unknown> = {
       deliveredAt: nowIso,
-      bookedStartAt: after.bookedStartAt ?? after.startAt,
-      bookedEndAt: after.bookedEndAt ?? after.endAt,
-      startAt: startIso,
-      endAt: endIso,
+      bookedStartAt: new Date(effectiveBookedStartMs).toISOString(),
+      bookedEndAt: new Date(effectiveBookedEndMs).toISOString(),
       updatedAt: nowIso,
-    });
-    await Promise.all(
-      ((after.reservationIds ?? []) as string[]).map((rid) =>
-        db
-          .collection('inventory_reservations')
-          .doc(rid)
-          .update({ startAt: startIso, endAt: endIso, updatedAt: nowIso })
-          .catch((err) => logger.warn('reservation shift failed', { rid, err: String(err) }))
-      )
-    );
+    };
+
+    if (lateDelivery) {
+      patch.lateDeliveredAt = nowIso;
+      patch.lateMinutes =
+        Math.round((nowMs - effectiveBookedEndMs) / 60000) ?? undefined;
+      patch.lateReason =
+        'Delivery happened after the booked end time';
+    }
+
+    await event.data.after.ref.update(patch);
+
+    // Only shift the unit reservations if handover is at/after the booked start.
+    // If for some reason handover is before the booked start (early dropoff), keep
+    // the booked window for the units too.
+    if (handoverStartMs >= effectiveBookedStartMs) {
+      const startIso = new Date(handoverStartMs).toISOString();
+      const endIso = new Date(handoverEndMs).toISOString();
+      await Promise.all(
+        ((after.reservationIds ?? []) as string[]).map((rid) =>
+          db
+            .collection('inventory_reservations')
+            .doc(rid)
+            .update({ startAt: startIso, endAt: endIso, updatedAt: nowIso })
+            .catch((err) => logger.warn('reservation shift failed', { rid, err: String(err) }))
+        )
+      );
+    }
 
     if (after.userId) {
-      const hours = Math.round((endMs - startMs) / 3600000);
+      const hours = Math.round((handoverEndMs - handoverStartMs) / 3600000);
+      const startedAt = timeFmtIst.format(new Date(handoverStartMs));
+      const endsAt = timeFmtIst.format(new Date(handoverEndMs));
+      const body = lateDelivery
+        ? `${event.params.orderId}: your ${hours}h started late at ${startedAt} and ends at ${endsAt}.`
+        : `${event.params.orderId}: your ${hours}h started at ${startedAt} and ends at ${endsAt}.`;
       await pushNotification(after.userId, {
-        title: 'Your rental has started',
-        body: `${event.params.orderId}: your ${hours}h started at ${timeFmtIst.format(new Date(startMs))} and ends at ${timeFmtIst.format(new Date(endMs))}.`,
+        title: lateDelivery ? 'Your rental has started' : 'Your rental has started',
+        body,
         type: 'order',
         orderId: event.params.orderId,
       });
@@ -1267,8 +2015,220 @@ export const releaseExpiredInventoryHoldSchedule = onSchedule(
   async () => {
     const result = await releaseExpiredHoldsInternal();
     logger.info('Expired holds released', result);
+
+    // This is the only schedule on the project with a working Cloud Scheduler
+    // record. The dedicated jobs (expirePastSlotOrders, recheckPrepaidSlots,
+    // backfillOrderContacts) were created during a control-plane wedge and never got
+    // their scheduler records, so the maintenance they own runs from here instead.
+    for (const [label, task] of [
+      ['contact backfill', backfillOrderContactsInternal],
+      ['past-slot expiry', expirePastSlotOrdersInternal],
+      ['pre-slot recheck', recheckPrepaidSlotsInternal],
+    ] as const) {
+      try {
+        await task();
+      } catch (err) {
+        // One failing task must never stop the others, and must never stop the
+        // hold release above from having run.
+        logger.error(`scheduled maintenance failed: ${label}`, { err: String(err) });
+      }
+    }
   }
 );
+
+// ——— expirePastSlotOrders ———
+
+/**
+ * Scheduled cleanup for orders that have been sitting visible and dispatchable
+ * for too long without being accepted/dispatched. This is the direct fix for the
+ * loophole where an order can stay visible indefinitely and still be accepted very
+ * late (or never), even when its original slot has long passed.
+ *
+ * The rule of thumb:
+ * - A paid order whose slot has passed and was never dispatched is no longer a
+ *   real delivery; it gets flagged/expired so ops and the customer see the truth.
+ * - An unpaid/pending order whose payment hold is long gone and whose slot is past
+ *   should already have been cleaned up by releaseExpiredHoldsInternal; this job is
+ *   a backstop for anything that slipped through or for orders that were confirmed
+ *   but never dispatched.
+ *
+ * This does not delete orders. It moves them to a terminal/expired state and records
+ * why, so the app can show "this order expired / was never dispatched" instead of
+ * leaving it visible as if it were still live.
+ */
+// NOTE: named expirePastSlotOrders rather than expireStaleOrders — that resource
+// name wedged on Google's control plane (eternal create 409s) and had to be
+// abandoned, the same failure that forced claimRun's name.
+async function expirePastSlotOrdersInternal() {
+    const now = new Date();
+    const nowMs = now.getTime();
+    const nowIso = now.toISOString();
+
+    // Find orders that are still "alive" in the portal but should not be:
+    // - confirmed/preparing orders that were never dispatched (no riderId) and whose
+    //   slot is well past, or
+    // - paid orders whose slot passed long enough ago that they're no longer realistic
+    //   to dispatch for the original slot.
+    const snap = await db
+      .collection('orders')
+      .where('status', 'in', ['pending_payment', 'confirmed', 'preparing'])
+      .where('riderId', '==', null)
+      .limit(200)
+      .get();
+
+    if (snap.empty) {
+      logger.info('expirePastSlotOrders: no unaccepted orders');
+      return;
+    }
+
+    let checked = 0;
+    let expired = 0;
+    let flagged = 0;
+
+    for (const doc of snap.docs) {
+      checked++;
+      const order = doc.data();
+      const startMs = order.startAt ? new Date(order.startAt).getTime() : NaN;
+
+      // Skip pathological docs without a readable start.
+      if (!Number.isFinite(startMs)) continue;
+
+      // If the slot is still in the future, leave it alone.
+      if (startMs > nowMs) continue;
+
+      // Measure lateness from the *delivery slot*, not the rental window: gating on
+      // endAt let a 24h rental sit visible for a whole day after its slot passed.
+      const pastMs = nowMs - startMs;
+
+      // Paid orders: if the slot is past and nobody dispatched, expire/flag it.
+      // Unpaid/pending orders with past slots should already be gone; if they survive
+      // here, treat them as expired too (backstop).
+      const isPaid = order.paymentStatus === 'paid' || order.paymentStatus === 'cod';
+
+      // Thresholds in ms, measured from the booked start. SOON matches the rider
+      // pool's 90-min dispatch grace, so an order is flagged exactly as it leaves the
+      // pool rather than while a rider could still legitimately take it.
+      const SOON_PAST_MS = 90 * 60 * 1000; // 90 min past start — the dispatch window has closed
+      const EXPIRED_MS = 4 * 60 * 60 * 1000; // 4 hours past start — no longer a real same-day slot
+
+      if (pastMs < SOON_PAST_MS) {
+        // Too soon to expire; but if it's been confirmed for a while with no rider,
+        // that's an ops signal, not an auto-cancel.
+        continue;
+      }
+
+      if (isPaid) {
+        if (pastMs >= EXPIRED_MS) {
+          // This order's slot is long gone and it was never dispatched.
+          // Move it to a terminal expired state.
+          await doc.ref.update({
+            status: 'cancelled',
+            cancelReason: 'Slot expired — never dispatched',
+            expiredAt: nowIso,
+            progressPercent: 0,
+            updatedAt: nowIso,
+          });
+          expired++;
+          logger.warn('expirePastSlotOrders: expired unpaid/unaccepted paid order', {
+            orderId: doc.id,
+            startMs,
+            pastMs,
+          });
+          if (order.userId) {
+            await pushNotification(order.userId, {
+              title: 'Order expired',
+              body: `${doc.id} — your delivery slot passed and the order was never dispatched. We’ll be in touch if anything can be done.`,
+              type: 'order',
+              orderId: doc.id,
+            });
+          }
+          continue;
+        }
+
+        // Paid, past slot but not yet deeply expired: flag it so ops can decide
+        // (dispatch now for a late slot, refund, or let it expire).
+        await doc.ref.update({
+          expiredAt: nowIso,
+          updatedAt: nowIso,
+        });
+        flagged++;
+      } else {
+        // Unpaid / pending with a past slot and no rider: expired.
+        await doc.ref.update({
+          status: 'cancelled',
+          paymentStatus: order.paymentStatus === 'paid' ? 'paid' : 'failed',
+          cancelReason: 'Slot expired — never dispatched',
+          expiredAt: nowIso,
+          progressPercent: 0,
+          updatedAt: nowIso,
+        });
+        expired++;
+      }
+    }
+
+    logger.info('expirePastSlotOrders completed', { checked, expired, flagged, nowMs });
+}
+
+export const expirePastSlotOrders = onSchedule(
+  { region: REGION, schedule: 'every 10 minutes' },
+  async () => {
+    await expirePastSlotOrdersInternal();
+  }
+);
+
+// ——— backfillOrderContacts (one-shot migration) ———
+
+/**
+ * One-shot backfill of customer contact (name, phone, door notes) onto open orders
+ * that predate it. It runs as a scheduled job so it uses the function's own admin
+ * credentials — the local backfill script needs ADC or a service-account key, which
+ * isn't configured on this machine.
+ *
+ * It stands down as soon as `config/contact_backfill.done` is set, so it is safe to
+ * leave scheduled; delete it once the migration has run:
+ *   firebase functions:delete backfillOrderContacts --region asia-south1
+ */
+async function backfillOrderContactsInternal() {
+    const marker = db.collection('config').doc('contact_backfill');
+    if ((await marker.get()).data()?.done === true) {
+      logger.info('backfillOrderContacts: already done');
+      return;
+    }
+
+    const nowIso = new Date().toISOString();
+    const snap = await db.collection('orders').limit(500).get();
+    let scanned = 0;
+    let updated = 0;
+    for (const doc of snap.docs) {
+      const order = doc.data();
+      if (['completed', 'cancelled', 'refunded'].includes(String(order.status))) continue;
+      if (order.customerPhone && order.customerName) continue;
+      scanned++;
+
+      const contact = await resolveCustomerContact(order.userId, order.addressId, order.addressFull);
+      const patch: Record<string, string> = {};
+      if (!order.customerName && contact.customerName) patch.customerName = contact.customerName;
+      if (!order.customerPhone && contact.customerPhone) patch.customerPhone = contact.customerPhone;
+      if (!order.addressInstructions && contact.addressInstructions) {
+        patch.addressInstructions = contact.addressInstructions;
+      }
+      if (!Object.keys(patch).length) continue;
+
+      await doc.ref.update({ ...patch, updatedAt: nowIso });
+      updated++;
+    }
+
+    await marker.set({ done: true, at: nowIso, scanned, updated }, { merge: true });
+    logger.info('backfillOrderContacts done', { scanned, updated });
+}
+
+export const backfillOrderContacts = onSchedule(
+  { region: REGION, schedule: 'every 5 minutes' },
+  async () => {
+    await backfillOrderContactsInternal();
+  }
+);
+
 
 // ——— extendBooking ———
 
@@ -1950,20 +2910,48 @@ export const claimRun = onCall({ region: REGION }, async (request) => {
     throw new HttpsError('failed-precondition', 'Order is not ready for dispatch');
   }
 
-  // Dispatch window on server time: hide far-future slots, refuse ended ones.
+  // A rider must not be able to grab an order whose original slot has already passed.
+  // If the slot is in the future, normal dispatch rules apply.
+  // If the slot is now or just passed, only ops (or a late-dispatch flow) should move it.
+  // If the slot passed long enough ago that it's no longer a real same-day delivery, refuse.
   const nowMs = Date.now();
-  if (order.endAt) {
-    const endMs = new Date(order.endAt).getTime();
-    if (Number.isFinite(endMs) && endMs < nowMs) {
-      throw new HttpsError('failed-precondition', 'This run is no longer dispatchable');
-    }
-  }
-  if (order.startAt) {
-    const startMs = new Date(order.startAt).getTime();
-    if (Number.isFinite(startMs) && startMs > nowMs + 60 * 60 * 1000) {
+  const startMs = order.startAt ? new Date(order.startAt).getTime() : NaN;
+
+  // The rider pool is the *delivery slot*, not the rental window: a 24h rental booked
+  // for 11 AM must stop being claimable shortly after 11 AM, not the next morning. So
+  // both bounds are measured from startAt.
+  const DISPATCH_LEAD_MS = 60 * 60 * 1000;
+  const DISPATCH_GRACE_MS = 90 * 60 * 1000;
+
+  if (Number.isFinite(startMs)) {
+    if (startMs > nowMs + DISPATCH_LEAD_MS) {
+      // Future slot: refuse if it's too far out to dispatch now.
       throw new HttpsError('failed-precondition', 'Too early — this run is not dispatchable yet');
     }
+
+    if (nowMs > startMs + DISPATCH_GRACE_MS) {
+      // The delivery slot has closed. A rider must not silently accept a stale order
+      // and let onOrderHandedOver quietly slide the clock later.
+      const pastMs = nowMs - startMs;
+      const STALE_DISPATCH_MS = 3 * 60 * 60 * 1000; // 3h past start = no longer a same-day delivery
+
+      // A late dispatch is an ops decision (customer re-agreement, fee, reschedule,
+      // or refund) — a plain rider claim is always refused.
+      if (pastMs > STALE_DISPATCH_MS || !request.auth?.token?.admin) {
+        throw new HttpsError(
+          'failed-precondition',
+          'This order’s delivery slot has already passed — ops must review it before anyone can accept it.'
+        );
+      }
+    }
   }
+
+  // Older orders predate the contact fields — fill them as the rider takes the run
+  // so they always have a name, number and door instructions to work with.
+  const contact =
+    order.customerPhone && order.customerName
+      ? {}
+      : await resolveCustomerContact(order.userId, order.addressId, order.addressFull);
 
   const nowIso = new Date().toISOString();
   await ref.update({
@@ -1976,6 +2964,11 @@ export const claimRun = onCall({ region: REGION }, async (request) => {
     liveDispatch: false,
     updatedAt: nowIso,
     etaLabel: 'Being prepared',
+    ...(order.customerName || !contact.customerName ? {} : { customerName: contact.customerName }),
+    ...(order.customerPhone || !contact.customerPhone ? {} : { customerPhone: contact.customerPhone }),
+    ...(order.addressInstructions || !contact.addressInstructions
+      ? {}
+      : { addressInstructions: contact.addressInstructions }),
   });
 
   if (order.userId) {
@@ -1988,6 +2981,72 @@ export const claimRun = onCall({ region: REGION }, async (request) => {
   }
 
   return { ok: true, orderId: id };
+});
+
+/**
+ * Customer contact for a rider's run. Riders can't read users/{uid}/addresses under
+ * the Firestore rules, so orders booked before contact was copied onto the order
+ * would leave a rider with no way to reach the customer. This resolves the booked
+ * address server-side and returns only what a rider needs — and only for a run the
+ * caller can legitimately work (already theirs, or still claimable).
+ */
+export const getRunContact = onCall({ region: REGION }, async (request) => {
+  const uid = requireAuth(request.auth?.uid);
+  const { orderId: id } = request.data as { orderId?: string };
+  if (!id) throw new HttpsError('invalid-argument', 'orderId required');
+
+  const riderSnap = await db.collection('riders').doc(uid).get();
+  if (!riderSnap.exists || riderSnap.data()?.active !== true) {
+    throw new HttpsError('permission-denied', 'Not signed in as an active rider');
+  }
+
+  const snap = await db.collection('orders').doc(id).get();
+  if (!snap.exists) throw new HttpsError('not-found', 'Order not found');
+  const order = snap.data()!;
+
+  const mine = order.riderId === uid;
+  const claimable =
+    !order.riderId &&
+    ['confirmed', 'preparing'].includes(order.status) &&
+    (!order.paymentStatus || order.paymentStatus === 'paid' || order.paymentStatus === 'cod');
+  if (!mine && !claimable) {
+    throw new HttpsError('permission-denied', 'This run is not available to you');
+  }
+
+  // Prefer the fields already on the order; look them up only when missing.
+  let contact: CustomerContact = {
+    customerName: order.customerName,
+    customerPhone: order.customerPhone,
+    addressInstructions: order.addressInstructions,
+  };
+  if (!contact.customerPhone || !contact.customerName) {
+    const found = await resolveCustomerContact(order.userId, order.addressId, order.addressFull);
+    contact = {
+      customerName: contact.customerName ?? found.customerName,
+      customerPhone: contact.customerPhone ?? found.customerPhone,
+      addressInstructions: contact.addressInstructions ?? found.addressInstructions,
+    };
+  }
+
+  // Persist what we resolved, so an order booked before contact was copied onto it
+  // stops being contactless for the next rider (and for ops in the admin console).
+  const patch: Record<string, string> = {};
+  if (!order.customerName && contact.customerName) patch.customerName = contact.customerName;
+  if (!order.customerPhone && contact.customerPhone) patch.customerPhone = contact.customerPhone;
+  if (!order.addressInstructions && contact.addressInstructions) {
+    patch.addressInstructions = contact.addressInstructions;
+  }
+  if (Object.keys(patch).length) {
+    await snap.ref
+      .update({ ...patch, updatedAt: new Date().toISOString() })
+      .catch((err) => logger.warn('getRunContact: could not persist contact', { id, err: String(err) }));
+  }
+
+  return {
+    customerName: contact.customerName ?? null,
+    customerPhone: contact.customerPhone ?? null,
+    addressInstructions: contact.addressInstructions ?? null,
+  };
 });
 
 type PlacesSuggestion = {

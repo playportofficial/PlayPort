@@ -22,6 +22,35 @@ export type OrderStatus =
 
 export type PaymentStatus = 'pending' | 'paid' | 'failed' | 'refunded' | 'cod';
 
+/**
+ * Snapshot of what a refund attempt actually did, stored on the order so the
+ * app can explain the money movement instead of printing a generic timeline.
+ * A missing field means that step has not happened yet (not that it failed).
+ */
+export interface OrderRefund {
+  /** When the refund was requested/processed server-side. */
+  requestedAt: string;
+  /** Who triggered it. 'customer' | 'staff' */
+  by: 'customer' | 'staff';
+  /** Why, when known (customer cancel reason, staff note, etc.). */
+  reason?: string;
+  /** ref: admin/settings.paymentRefundNote */
+  note?: string;
+  /** Populated when the gateway publishes a refund reference. */
+  providerRef?: string;
+  /** Populated when Razorpay confirms the refund. Absent = not confirmed yet. */
+  providerRefundId?: string;
+  /** INR amount actually refunded (usually the full paid order total). */
+  amount?: number;
+  /** Free-text error from the gateway or ops, when the attempt could not complete. */
+  error?: string;
+  /** Populated when Razorpay confirms the refund capture status. */
+  status?: 'pending' | 'processed' | 'failed';
+  updatedAt: string;
+}
+
+export type RefundState = OrderRefund | null;
+
 export type PaymentMethodType = 'upi' | 'card' | 'netbanking' | 'cod' | 'online';
 
 export type InventoryUnitStatus = 'available' | 'maintenance' | 'retired';
@@ -269,6 +298,13 @@ export interface Order {
   etaLabel: string;
   addressLabel: string;
   addressFull: string;
+  /** Saved address the booking was placed for. */
+  addressId?: string;
+  /** Customer contact for the rider (copied from the saved address at booking). */
+  customerName?: string;
+  customerPhone?: string;
+  /** Door / gate / floor notes the customer left on the address. */
+  addressInstructions?: string;
   items: OrderItem[];
   subtotal: number;
   taxes: number;
@@ -315,6 +351,42 @@ export interface Order {
   razorpayOrderId?: string;
   /** Paid session extensions — each pushes endAt forward. */
   extensions?: OrderExtension[];
+  /** Real refund record when one has been attempted. Null = no refund attempt yet. */
+  refund?: RefundState;
+  /** Staff note explaining why a refund was processed, if any. */
+  refundNote?: string;
+  /** True when the refund callable has already been run for this order this session. */
+  refundProcessed?: boolean;
+  /**
+   * Pre-slot availability recheck (scheduled job `recheckPrepaidSlots`).
+   * Set when a paid scheduled order's slot is still ahead and the recheck found a
+   * problem. `null` means the recheck has not flagged this order.
+   */
+  preSlotRecheckAt?: string | null;
+  /** Result kind from the recheck. `ok` is never stored — only problem states are. */
+  preSlotRecheckStatus?: 'unfulfillable' | 'noStock' | null;
+  /** Human-readable note from the recheck, written for ops. */
+  preSlotRecheckNote?: string | null;
+  /**
+   * When the order was marked expired / no longer dispatchable for its original slot
+   * (by the expirePastSlotOrders job or admin action). Null when still live.
+   */
+  expiredAt?: string | null;
+  /**
+   * True when the original delivery slot has passed and the order has not been
+   * dispatched for that slot. Used by the rider portal / admin list to hide or flag
+   * stale orders that should not be claimable by a rider.
+   */
+  slotExpired?: boolean;
+  /**
+   * When the kit was actually delivered, if that happened after the booked end time.
+   * Populated by onOrderHandedOver when the delivery is late.
+   */
+  lateDeliveredAt?: string | null;
+  /** Minutes the delivery was late beyond the booked end time. */
+  lateMinutes?: number;
+  /** Why the delivery is recorded as late, when known. */
+  lateReason?: string;
 }
 
 export interface OrderExtension {
@@ -381,6 +453,20 @@ export interface AppNotification {
   read: boolean;
   createdAt?: string;
   orderId?: string;
+}
+
+/** Ops-side alert that staff see on the admin overview (new order, etc.). */
+export interface OpsNotification {
+  id: string;
+  kind: 'new_order' | 'payment_received' | 'dispatch' | 'refund' | 'flag' | 'system';
+  title: string;
+  body: string;
+  orderId?: string;
+  severity: 'info' | 'warning' | 'critical';
+  read: boolean;
+  createdAt: string;
+  /** When the underlying event happened, for sorting. */
+  eventAt: string;
 }
 
 export interface User {

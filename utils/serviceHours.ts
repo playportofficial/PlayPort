@@ -242,23 +242,149 @@ export function nextOpenStart(now = new Date()): Date {
 export const DISPATCH_LEAD_MINUTES = 60;
 
 /**
- * Rider-pool gating: an unclaimed order is claimable when its window hasn't
- * ended and its start is within the dispatch lead (or unscheduled legacy).
+ * How long after startAt a job stays in the rider pool. A booking is a *delivery
+ * slot*, not a rental window: a PS5 booked for 11 AM is late by 11:01 AM, even
+ * though the 24h rental would run until the next morning. Gating on `endAt` kept
+ * long rentals claimable for a whole day behind a stale "Starts … 11:13 AM" label.
+ */
+export const DISPATCH_GRACE_MINUTES = 90;
+
+/**
+ * Rider-pool gating: an unclaimed order is claimable only inside its delivery
+ * slot — from DISPATCH_LEAD_MINUTES before startAt until DISPATCH_GRACE_MINUTES
+ * after it. Orders flagged expired by ops/system are never claimable, and legacy
+ * orders without a readable start stay visible.
+ *
+ * This is the app-side mirror of the server's claimRun dispatchability check.
  */
 export function isDispatchable(
-  order: { startAt?: string; endAt?: string } | null | undefined,
+  order: { startAt?: string; endAt?: string; expiredAt?: string | null } | null | undefined,
   now = new Date()
 ): boolean {
   if (!order) return false;
-  const nowMs = now.getTime();
-  if (order.endAt) {
-    const end = new Date(order.endAt).getTime();
-    if (Number.isFinite(end) && end < nowMs) return false;
-  }
+
+  // If ops/system already marked the order expired, it is not in the rider pool.
+  if (order.expiredAt) return false;
+
+  // Legacy orders predate scheduled starts — keep them visible.
   if (!order.startAt) return true;
   const start = new Date(order.startAt).getTime();
   if (!Number.isFinite(start)) return true;
-  return start <= nowMs + DISPATCH_LEAD_MINUTES * 60 * 1000;
+
+  const nowMs = now.getTime();
+  if (start > nowMs + DISPATCH_LEAD_MINUTES * 60 * 1000) return false; // too early to dispatch
+  if (nowMs > start + DISPATCH_GRACE_MINUTES * 60 * 1000) return false; // slot has closed
+  return true;
+}
+
+export type DeliverySlotState = 'upcoming' | 'late' | 'expired';
+
+export interface DeliverySlot {
+  state: DeliverySlotState;
+  /** "Today, 11:13 AM" */
+  startLabel: string;
+  /** "Tomorrow, 11:13 AM" */
+  endLabel: string | null;
+  /** "Today, 11:13 AM – Tomorrow, 11:13 AM" */
+  window: string;
+  /** Whole booked hours, e.g. 24. */
+  hours: number | null;
+  /** Minutes past the booked start; 0 while the slot has not begun. */
+  lateMinutes: number;
+  /** One line a rider or ops can act on. */
+  note: string;
+}
+
+/** "3h 17m" / "45m" — compact lateness. */
+export function formatLate(minutes: number): string {
+  if (minutes < 60) return `${minutes}m`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m ? `${h}h ${m}m` : `${h}h`;
+}
+
+/**
+ * How a booking's *delivery slot* stands right now — the honest label the rider
+ * portal shows instead of a bare "Starts Today, 11:13 AM", which reads as future
+ * even when the slot is hours gone.
+ */
+export function deliverySlot(
+  order: { startAt?: string; endAt?: string; expiredAt?: string | null } | null | undefined,
+  now = new Date()
+): DeliverySlot | null {
+  if (!order?.startAt) return null;
+  const start = new Date(order.startAt);
+  if (Number.isNaN(start.getTime())) return null;
+
+  const end = order.endAt ? new Date(order.endAt) : null;
+  const hasEnd = end != null && !Number.isNaN(end.getTime());
+  const hours = hasEnd ? Math.round((end!.getTime() - start.getTime()) / 3_600_000) : null;
+  const startLabel = formatSlot(order.startAt, now);
+  const endLabel = hasEnd ? formatSlot(order.endAt as string, now) : null;
+
+  const lateMinutes = Math.max(0, Math.round((now.getTime() - start.getTime()) / 60_000));
+  const state: DeliverySlotState = order.expiredAt
+    ? 'expired'
+    : lateMinutes === 0
+      ? 'upcoming'
+      : lateMinutes <= DISPATCH_GRACE_MINUTES
+        ? 'late'
+        : 'expired';
+
+  const duration = hours ? ` · ${hours}h rental` : '';
+  const note =
+    state === 'upcoming'
+      ? `Booked delivery ${startLabel}${duration}. The rental clock starts at handover, not now.`
+      : state === 'late'
+        ? `Booked delivery ${startLabel} — running ${formatLate(lateMinutes)} late. Ops confirms late dispatches.`
+        : `Booked delivery ${startLabel} passed ${formatLate(lateMinutes)} ago. Ops must review this run before anyone delivers it.`;
+
+  return {
+    state,
+    startLabel,
+    endLabel,
+    window: endLabel ? `${startLabel} – ${endLabel}` : startLabel,
+    hours,
+    lateMinutes,
+    note,
+  };
+}
+
+/**
+ * Ops-only late dispatch: an order whose original slot has just passed may still
+ * be dispatched, but only after an ops decision (customer re-agreement, fee,
+ * reschedule, or refund). This is used by the admin console, not the rider pool.
+ *
+ * Returns `null` when the order is clearly not late-dispatchable (too old, already
+ * expired, etc.), and a short note when it is.
+ */
+export function isLateDispatchableByOps(
+  order: { startAt?: string; endAt?: string; expiredAt?: string | null; riderId?: string | null } | null | undefined,
+  now = new Date()
+): { ok: boolean; reason?: string } | null {
+  if (!order) return null;
+  if (order.expiredAt) {
+    return { ok: false, reason: 'This order has already expired.' };
+  }
+  if (order.riderId) {
+    return { ok: false, reason: 'This order already has a rider.' };
+  }
+  const nowMs = now.getTime();
+  const start = order.startAt ? new Date(order.startAt).getTime() : NaN;
+  if (!Number.isFinite(start)) {
+    // No readable slot — nothing to be late for; use the normal path.
+    return null;
+  }
+  const pastMs = nowMs - start;
+  if (pastMs <= DISPATCH_GRACE_MINUTES * 60 * 1000) {
+    // Still inside the normal dispatch window — use the normal path.
+    return null;
+  }
+  const STALE_DISPATCH_MS = 3 * 60 * 60 * 1000;
+  if (pastMs > STALE_DISPATCH_MS) {
+    return { ok: false, reason: 'This order’s slot passed too long ago to dispatch as-is.' };
+  }
+  return { ok: true };
 }
 
 export { dayTimeFmt };

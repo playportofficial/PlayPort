@@ -19,6 +19,9 @@ import {
   adminListUsers,
   adminSaveAppConfig,
   adminSetUnitStatus,
+  adminListOpsNotifications,
+  adminMarkOpsNotificationRead,
+  adminMarkAllOpsNotificationsRead,
   adminUpsertCategory,
   adminUpsertExperience,
   adminUpsertHub,
@@ -33,6 +36,7 @@ import type {
   HubInfo,
   InventoryUnit,
   InventoryUnitStatus,
+  OpsNotification,
   Order,
   OrderStatus,
   Product,
@@ -64,6 +68,7 @@ interface AdminState {
     categories: number;
     reviews: number;
   } | null;
+  opsNotifications: OpsNotification[];
   hydrateAll: () => Promise<void>;
   refreshCounts: () => Promise<void>;
   loadProducts: () => Promise<void>;
@@ -90,6 +95,10 @@ interface AdminState {
   removeReview: (id: string) => Promise<void>;
   setReviewHidden: (id: string, hidden: boolean) => Promise<void>;
   saveConfig: (config: AppConfig) => Promise<void>;
+  loadOpsNotifications: () => Promise<void>;
+  markOpsNotificationRead: (id: string) => Promise<void>;
+  markAllOpsNotificationsRead: () => Promise<void>;
+  requestAdminNotificationPermission: () => Promise<boolean>;
 }
 
 export const useAdminStore = create<AdminState>((set, get) => ({
@@ -106,6 +115,7 @@ export const useAdminStore = create<AdminState>((set, get) => ({
   users: [],
   config: { ...DEFAULT_APP_CONFIG },
   counts: null,
+  opsNotifications: [],
 
   hydrateAll: async () => {
     set({ loading: true, error: null });
@@ -164,6 +174,13 @@ export const useAdminStore = create<AdminState>((set, get) => ({
   loadReviews: async () => set({ reviews: await adminListReviews() }),
   loadUsers: async () => set({ users: await adminListUsers() }),
   loadConfig: async () => set({ config: await adminGetAppConfig() }),
+  loadOpsNotifications: async () => {
+    try {
+      set({ opsNotifications: await adminListOpsNotifications() });
+    } catch {
+      /* keep last known */
+    }
+  },
 
   saveProduct: async (product) => {
     await adminUpsertProduct(product);
@@ -261,4 +278,37 @@ export const useAdminStore = create<AdminState>((set, get) => ({
     await adminSaveAppConfig(config);
     set({ config });
   },
+
+  markOpsNotificationRead: async (id) => {
+    try {
+      await adminMarkOpsNotificationRead(id);
+      set({
+        opsNotifications: get().opsNotifications.map((n) =>
+          n.id === id ? { ...n, read: true } : n
+        ),
+      });
+    } catch {
+      /* ignore */
+    }
+  },
+
+  markAllOpsNotificationsRead: async () => {
+    try {
+      await adminMarkAllOpsNotificationsRead();
+      set({ opsNotifications: get().opsNotifications.map((n) => ({ ...n, read: true })) });
+    } catch {
+      /* ignore */
+    }
+  },
+
+  requestAdminNotificationPermission: async () => {
+    if (typeof window === 'undefined' || !('Notification' in window)) return false;
+    if (Notification.permission === 'granted') return true;
+    if (Notification.permission !== 'denied') {
+      const granted = await Notification.requestPermission();
+      return granted === 'granted';
+    }
+    return false;
+  },
 }));
+

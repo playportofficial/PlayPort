@@ -87,19 +87,39 @@ export default function OrderDetailScreen() {
   const cancellable =
     !order.riderId &&
     (order.status === 'pending_payment' || order.status === 'confirmed' || order.status === 'preparing');
+
+  // The customer-facing truth about the original booked window. We intentionally
+  // keep the original booked window (`bookedStartAt/bookedEndAt`) as the customer-
+  // facing slot, even when the runtime clock was shifted at handover.
+  const bookedEndMs =
+    order.bookedEndAt ? new Date(order.bookedEndAt).getTime() : NaN;
+  const slotExpired =
+    Number.isFinite(bookedEndMs) && bookedEndMs < now && order.status !== 'completed';
+  const isLateDelivery =
+    Boolean(order.lateDeliveredAt) && order.status !== 'completed';
+
+  // Time left on the original booked end, for display only. A past value is shown
+  // as "ended N min ago" rather than a false future countdown.
   const endMs = order.endAt ? new Date(order.endAt).getTime() : NaN;
-  const minutesLeft = Number.isFinite(endMs) ? Math.max(0, Math.round((endMs - now) / 60000)) : null;
+  const minutesLeft =
+    Number.isFinite(endMs) && order.endAt ? Math.round((endMs - now) / 60000) : null;
   const timeLeft =
     minutesLeft == null
       ? ''
       : minutesLeft >= 60
         ? `${Math.floor(minutesLeft / 60)}h ${minutesLeft % 60}m left`
-        : `${minutesLeft} min left`;
+        : minutesLeft >= 0
+          ? `${minutesLeft} min left`
+          : `ended ${Math.abs(minutesLeft)} min ago`;
+
   const canExtend =
     (order.status === 'delivered' || order.status === 'active') && order.paymentStatus === 'paid';
   const liveMinutes = remainingEtaMinutes(order, now);
   const liveAge = locationAgeLabel(order.riderLocationUpdatedAt, now);
-  const showRider = Boolean(order.riderName) && !['cancelled', 'refunded', 'pending_payment'].includes(order.status);
+  const showRider =
+    Boolean(order.riderName) &&
+    !['cancelled', 'refunded', 'pending_payment'].includes(order.status);
+
 
   return (
     <Screen showHeader={false}>
@@ -143,12 +163,22 @@ export default function OrderDetailScreen() {
                 ? 'Your rider is preparing the kit'
                 : order.status === 'confirmed'
                   ? 'Booking confirmed'
-                  : orderStatusHeadline(order.status)}
+                  : orderStatusHeadline(order.status, slotExpired, isLateDelivery)}
           </Text>
-          {inUse && order.endAt ? (
+          {inUse && order.bookedEndAt ? (
             <Text style={styles.endsLine}>
-              Your time ends at {formatSlotTime(order.endAt)}
+              Your booked time ends at {formatSlotTime(order.bookedEndAt)}
               {timeLeft ? ` · ${timeLeft}` : ''}
+            </Text>
+          ) : null}
+          {slotExpired && order.status !== 'completed' ? (
+            <Text style={styles.endsLineLate}>
+              This slot has already passed.{order.riderName ? ' A rider was assigned after the slot.' : ' No rider was dispatched for this slot.'}
+            </Text>
+          ) : null}
+          {isLateDelivery ? (
+            <Text style={styles.endsLineLate}>
+              Your kit was delivered after the booked end time.
             </Text>
           ) : null}
           <Text style={styles.statusSub}>
@@ -337,7 +367,17 @@ export default function OrderDetailScreen() {
   );
 }
 
-function orderStatusHeadline(status: OrderStatus): string {
+function orderStatusHeadline(
+  status: OrderStatus,
+  slotExpired: boolean,
+  isLateDelivery: boolean
+): string {
+  if (slotExpired && status !== 'completed') {
+    return 'Slot passed — order expired';
+  }
+  if (isLateDelivery) {
+    return 'Delivered late';
+  }
   switch (status) {
     case 'delivered':
       return 'Delivered & ready';
@@ -374,6 +414,7 @@ const styles = StyleSheet.create({
   statusTitle: { color: colors.primaryText, fontFamily: fonts.heading, fontSize: 20 },
   statusSub: { color: colors.secondaryText, fontFamily: fonts.body, fontSize: 13, lineHeight: 18 },
   endsLine: { color: colors.playportOrange, fontFamily: fonts.bodyMedium, fontSize: 15 },
+  endsLineLate: { color: colors.danger, fontFamily: fonts.bodyMedium, fontSize: 14, lineHeight: 18 },
   codeCard: { alignItems: 'center', gap: 6, borderWidth: 1, borderColor: colors.playportOrange },
   codeLabel: { color: colors.mutedText, fontFamily: fonts.bodyMedium, fontSize: 12, letterSpacing: 1 },
   codeValue: { color: colors.primaryText, fontFamily: fonts.heading, fontSize: 32, letterSpacing: 6 },

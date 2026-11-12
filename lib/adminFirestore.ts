@@ -4,6 +4,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  limit,
   orderBy,
   query,
   setDoc,
@@ -12,7 +13,7 @@ import {
   type DocumentData,
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import { callCompleteReturn, callUpdateOrderStatus } from '@/lib/functions';
+import { callCompleteReturn, callExecuteRefundBooking, callUpdateOrderStatus } from '@/lib/functions';
 import type {
   AppConfig,
   Category,
@@ -20,7 +21,9 @@ import type {
   HubInfo,
   InventoryUnit,
   InventoryUnitStatus,
+  OpsNotification,
   Order,
+  OrderRefund,
   OrderStatus,
   Product,
   Review,
@@ -196,6 +199,112 @@ export async function adminGetOrder(id: string): Promise<Order | null> {
 export function adminNextStatuses(from: OrderStatus): OrderStatus[] {
   return (ORDER_TRANSITIONS[from] ?? []) as OrderStatus[];
 }
+
+/**
+ * Refund a paid order as staff. This is the payment action behind the "refund"
+ * button — it calls the server refund path so money actually moves (where
+ * Razorpay is configured), marks the order refunded, and records the refund
+ * result/attempt on the order.
+ *
+ * Unlike adminAdvanceOrderStatus(status='refunded'), this is a payment operation,
+ * not a status transition, and it is allowed for orders a rider has already
+ * accepted (where the customer cancel screen is blocked).
+ *
+ * @param reason  Public-facing reason shown to the customer (e.g. "Equipment unavailable").
+ * @param note   Internal ops note — not shown to the customer.
+ */
+export async function adminRefundOrder(
+  orderId: string,
+  reason: string,
+  note?: string
+): Promise<{
+  via: 'functions' | 'firestore';
+  refunded: boolean;
+  manual: boolean;
+  record: ImportedOrderRefund | null;
+}> {
+  try {
+    const result = await callExecuteRefundBooking(orderId, reason, note);
+    return {
+      via: 'functions',
+      refunded: result.refunded,
+      manual: result.manual,
+      record: result.record ?? null,
+    };
+  } catch (err) {
+    if (isFunctionsUnavailable(err)) {
+      // Functions not reachable (local dev without the emulator, etc.) — fall back
+      // to the local Firestore path so ops can still record a manual refund.
+      try {
+        const record = await adminRefundOrderLocal(orderId, reason, note);
+        return { via: 'firestore', refunded: true, manual: true, record };
+      } catch (localErr) {
+        throw localErr;
+      }
+    }
+    throw err;
+  }
+}
+
+/** Local-only fallback for adminRefundOrder when Functions are unavailable.
+ * It still writes a refund record and marks the order refunded, but it cannot
+ * call Razorpay — it is explicitly a manual/refund-pending state.
+ */
+async function adminRefundOrderLocal(
+  orderId: string,
+  reason: string,
+  note?: string
+): Promise<ImportedOrderRefund | null> {
+  const ref = doc(db, 'orders', orderId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('Order not found');
+  const order = snap.data() as Order;
+
+  if (order.paymentStatus !== 'paid') {
+    throw new Error(
+      order.paymentStatus === 'cod'
+        ? 'This order is cash on delivery — there is nothing to refund.'
+        : 'This order has not been paid yet.'
+    );
+  }
+  if (order.status === 'cancelled' || order.status === 'completed' || order.status === 'refunded') {
+    throw new Error('Order is already closed');
+  }
+  if (order.refundProcessed) {
+    throw new Error('A refund has already been processed for this order');
+  }
+
+  const now = new Date().toISOString();
+  const record: ImportedOrderRefund = {
+    requestedAt: now,
+    by: 'staff',
+    reason,
+    note,
+    status: 'pending',
+    amount: Math.round(Number(order.total) || 0),
+    updatedAt: now,
+  };
+
+  await updateDoc(ref, {
+    paymentStatus: 'refunded',
+    status: 'refunded',
+    refund: record,
+    refundProcessed: true,
+    refundNote: note ?? undefined,
+    progressPercent: 0,
+    updatedAt: now,
+  });
+
+  // Release the reserved kits so they can be re-booked.
+  const reservationIds = order.reservationIds ?? [];
+  if (reservationIds.length) {
+    await releaseReservationsLocal(reservationIds, 'released');
+  }
+
+  return record;
+}
+
+type ImportedOrderRefund = OrderRefund;
 
 async function releaseReservationsLocal(
   reservationIds: string[],
@@ -435,5 +544,27 @@ export async function adminSaveAppConfig(config: AppConfig): Promise<void> {
       updatedAt: new Date().toISOString(),
     } as unknown as DocumentData),
     { merge: true }
+  );
+}
+
+export async function adminListOpsNotifications(): Promise<OpsNotification[]> {
+  const snap = await getDocs(
+    query(collection(db, 'ops_notifications'), orderBy('createdAt', 'desc'), limit(50))
+  );
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() })) as OpsNotification[];
+}
+
+export async function adminMarkOpsNotificationRead(id: string): Promise<void> {
+  await setDoc(doc(db, 'ops_notifications', id), { read: true, updatedAt: new Date().toISOString() }, { merge: true });
+}
+
+export async function adminMarkAllOpsNotificationsRead(): Promise<void> {
+  const snap = await getDocs(
+    query(collection(db, 'ops_notifications'), where('read', '==', false))
+  );
+  await Promise.all(
+    snap.docs.map((d) =>
+      setDoc(doc(db, 'ops_notifications', d.id), { read: true, updatedAt: new Date().toISOString() }, { merge: true })
+    )
   );
 }

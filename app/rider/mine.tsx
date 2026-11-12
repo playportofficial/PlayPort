@@ -4,8 +4,8 @@ import { StatusBadge } from '@/components/ui/StatusBadge';
 import { colors, fonts, radii, spacing, typeScale } from '@/constants/theme';
 import { useResponsive } from '@/hooks/useResponsive';
 import { useRiderStore } from '@/store/riderStore';
-import { orderStatusLabel } from '@/utils/format';
-import { formatSlot } from '@/utils/serviceHours';
+import { rentalWindow, riderStatusLabel } from '@/utils/format';
+import { deliverySlot, formatLate } from '@/utils/serviceHours';
 
 export default function RiderMineScreen() {
   const { horizontalPadding } = useResponsive();
@@ -28,26 +28,41 @@ export default function RiderMineScreen() {
       {mine.length === 0 ? (
         <Text style={styles.empty}>Accept a job from Available to start a run.</Text>
       ) : (
-        mine.map((order) => (
-          <Pressable
-            key={order.id}
-            style={styles.card}
-            onPress={() => router.push(`/rider/order/${order.id}` as never)}
-          >
-            <View style={styles.row}>
-              <Text style={styles.cardTitle}>{order.id}</Text>
-              <StatusBadge status={order.status} label={orderStatusLabel(order.status)} />
-            </View>
-            <Text style={styles.meta}>{order.addressFull || order.addressLabel}</Text>
-            {order.startAt ? (
-              <Text style={styles.meta}>Starts {formatSlot(order.startAt)}</Text>
-            ) : null}
-            <Text style={styles.meta}>
-              ₹{order.total} · {order.items?.[0]?.name ?? 'Kit'}
-              {order.items && order.items.length > 1 ? ` +${order.items.length - 1}` : ''}
-            </Text>
-          </Pressable>
-        ))
+        mine.map((order) => {
+          const rental = rentalWindow(order);
+          const slot = deliverySlot(order);
+          return (
+            <Pressable
+              key={order.id}
+              style={styles.card}
+              onPress={() => router.push(`/rider/order/${order.id}` as never)}
+            >
+              <View style={styles.row}>
+                <Text style={styles.cardTitle}>{order.id}</Text>
+                <StatusBadge status={order.status} label={riderStatusLabel(order.status)} />
+              </View>
+              <Text style={styles.meta}>{order.addressFull || order.addressLabel}</Text>
+              {rental ? (
+                <Text
+                  style={[
+                    styles.meta,
+                    !rental.started && slot?.state !== 'upcoming' && styles.metaWarn,
+                  ]}
+                >
+                  {rental.started
+                    ? `Rental running${rental.hours ? ` · ${rental.hours}h` : ''}${rental.endLabel ? ` · returns ${rental.endLabel}` : ''}`
+                    : slot && slot.state !== 'upcoming'
+                      ? `Delivery slot ${slot.startLabel} · ${formatLate(slot.lateMinutes)} late`
+                      : `Booked ${rental.range}${rental.hours ? ` · ${rental.hours}h` : ''} · timer starts at handover`}
+                </Text>
+              ) : null}
+              <Text style={styles.meta}>
+                ₹{order.total} · {order.items?.[0]?.name ?? 'Kit'}
+                {order.items && order.items.length > 1 ? ` +${order.items.length - 1}` : ''}
+              </Text>
+            </Pressable>
+          );
+        })
       )}
     </ScrollView>
   );
@@ -58,6 +73,7 @@ const styles = StyleSheet.create({
   scroll: { paddingTop: spacing.xl, paddingBottom: spacing.xxxl, gap: spacing.md },
   title: { fontFamily: fonts.heading, fontSize: typeScale.display, color: colors.primaryText },
   sub: { fontFamily: fonts.body, fontSize: typeScale.body, color: colors.secondaryText },
+  metaWarn: { color: colors.danger },
   empty: { fontFamily: fonts.body, color: colors.mutedText, marginTop: spacing.xl },
   card: {
     backgroundColor: colors.surface,
