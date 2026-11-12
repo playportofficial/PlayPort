@@ -277,7 +277,7 @@ export function isDispatchable(
   return true;
 }
 
-export type DeliverySlotState = 'upcoming' | 'late' | 'expired';
+export type DeliverySlotState = 'upcoming' | 'late' | 'closed';
 
 export interface DeliverySlot {
   state: DeliverySlotState;
@@ -289,8 +289,14 @@ export interface DeliverySlot {
   window: string;
   /** Whole booked hours, e.g. 24. */
   hours: number | null;
-  /** Minutes past the booked start; 0 while the slot has not begun. */
+  /**
+   * Minutes since the booked start — how late the *delivery* is. 0 before it begins.
+   * On a multi-hour rental this keeps counting past the window end, so read
+   * `overdueMinutes` once `state` is 'closed'.
+   */
   lateMinutes: number;
+  /** Minutes since the booked window ended; 0 while it is still open. */
+  overdueMinutes: number;
   /** One line a rider or ops can act on. */
   note: string;
 }
@@ -322,30 +328,44 @@ export function deliverySlot(
   const startLabel = formatSlot(order.startAt, now);
   const endLabel = hasEnd ? formatSlot(order.endAt as string, now) : null;
 
-  const lateMinutes = Math.max(0, Math.round((now.getTime() - start.getTime()) / 60_000));
+  const nowMs = now.getTime();
+  const windowLabel = endLabel ? `${startLabel} – ${endLabel}` : startLabel;
+  const lateMinutes = Math.max(0, Math.round((nowMs - start.getTime()) / 60_000));
+  // A 24h rental booked yesterday reads as "25h late" by the time its window closes,
+  // which is technically true but useless: what ops and the rider need then is how long
+  // the *booked window* has been gone, not how long since it started.
+  const overdueMinutes = hasEnd
+    ? Math.max(0, Math.round((nowMs - end!.getTime()) / 60_000))
+    : 0;
+
   const state: DeliverySlotState = order.expiredAt
-    ? 'expired'
-    : lateMinutes === 0
+    ? 'closed'
+    : nowMs < start.getTime()
       ? 'upcoming'
-      : lateMinutes <= DISPATCH_GRACE_MINUTES
-        ? 'late'
-        : 'expired';
+      : hasEnd && nowMs > end!.getTime()
+        ? 'closed'
+        : 'late';
 
   const duration = hours ? ` · ${hours}h rental` : '';
   const note =
     state === 'upcoming'
       ? `Booked delivery ${startLabel}${duration}. The rental clock starts at handover, not now.`
       : state === 'late'
-        ? `Booked delivery ${startLabel} — running ${formatLate(lateMinutes)} late. Ops confirms late dispatches.`
-        : `Booked delivery ${startLabel} passed ${formatLate(lateMinutes)} ago. Ops must review this run before anyone delivers it.`;
+        ? `Booked delivery ${startLabel} — running ${formatLate(lateMinutes)} late.${
+            endLabel ? ` The window closes ${endLabel}.` : ' Ops confirms late dispatches.'
+          }`
+        : overdueMinutes > 0
+          ? `Booked window ${windowLabel} closed ${formatLate(overdueMinutes)} ago. Ops must review this run before anyone delivers it.`
+          : 'This order was flagged expired. Ops must review it before anyone delivers it.';
 
   return {
     state,
     startLabel,
     endLabel,
-    window: endLabel ? `${startLabel} – ${endLabel}` : startLabel,
+    window: windowLabel,
     hours,
     lateMinutes,
+    overdueMinutes,
     note,
   };
 }

@@ -49,7 +49,9 @@ export default function RiderAvailableScreen() {
                 <Text style={[styles.meta, slot.state !== 'upcoming' && styles.metaWarn]}>
                   {slot.state === 'upcoming'
                     ? `Delivery slot ${slot.window}${slot.hours ? ` · ${slot.hours}h` : ''} · clock starts at handover`
-                    : `Delivery slot ${slot.startLabel} · ${formatLate(slot.lateMinutes)} late · clock starts at handover`}
+                    : slot.state === 'closed'
+                      ? `Window closed ${formatLate(slot.overdueMinutes)} ago · ${slot.window}`
+                      : `Delivery slot ${slot.startLabel} · ${formatLate(slot.lateMinutes)} late · clock starts at handover`}
                 </Text>
               ) : null}
               <Text style={styles.meta}>

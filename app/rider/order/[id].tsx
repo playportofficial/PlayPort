@@ -13,7 +13,7 @@ import type { RunContact } from '@/lib/functions';
 import type { Order, OrderStatus } from '@/types';
 import { useNow } from '@/hooks/useNow';
 import { rentalWindow, riderStatusLabel } from '@/utils/format';
-import { deliverySlot, isDispatchable } from '@/utils/serviceHours';
+import { deliverySlot, formatLate, isDispatchable } from '@/utils/serviceHours';
 import { isEnRoute, locationAgeLabel, remainingEtaMinutes } from '@/utils/liveEta';
 
 /** +919876543210 → "+91 98765 43210" so the number reads like one. */
@@ -181,7 +181,7 @@ export default function RiderOrderDetailScreen() {
   // for 11:13 AM is late at 2 PM, not "starting at 11:13 AM" all afternoon.
   const slot = order ? deliverySlot(order) : null;
   const isExpired = Boolean(order?.expiredAt);
-  const slotClosed = slot?.state === 'expired';
+  const slotClosed = slot?.state === 'closed';
   const canClaim =
     Boolean(order) &&
     !order!.riderId &&
@@ -342,11 +342,16 @@ export default function RiderOrderDetailScreen() {
           <Text style={styles.blocked}>
             {isExpired
               ? 'This order was expired before handover. The rental clock should not be running.'
-              : slot
-                ? slot.note
-                : 'This order’s booked slot has already passed. Ops must review it before anyone delivers it.'}
+              : 'The booked window has closed. Ops must review this run — the customer’s original slot is in the past, so a late dispatch needs their agreement, a reschedule, or a refund.'}
           </Text>
-          {slot ? <Text style={styles.meta}>Booked window: {slot.window}</Text> : null}
+          {slot ? (
+            <Text style={styles.meta}>
+              Booked window: {slot.window}
+              {slot.overdueMinutes > 0
+                ? ` · closed ${formatLate(slot.overdueMinutes)} ago`
+                : ''}
+            </Text>
+          ) : null}
         </View>
       ) : null}
 

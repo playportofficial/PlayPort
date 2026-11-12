@@ -209,23 +209,38 @@ describe('deliverySlot (honest rider labels)', () => {
     expect(slot.lateMinutes).toBe(0);
     expect(slot.note).toMatch(/starts at handover/);
   });
-  it('reports how late a passed slot is, and the booked window', () => {
+  it('reports lateness from the booked start while the window is still open', () => {
     const slot = deliverySlot(
       { startAt: iso('2026-10-12T05:43:00Z'), endAt: iso('2026-10-13T05:43:00Z') },
-      T('2026-10-12T09:00:00Z') // 3h 17m after start
+      T('2026-10-12T09:00:00Z') // 3h 17m after start, window still open
     )!;
-    expect(slot.state).toBe('expired');
+    expect(slot.state).toBe('late');
     expect(slot.lateMinutes).toBe(197);
+    expect(slot.overdueMinutes).toBe(0);
     expect(slot.hours).toBe(24);
     expect(slot.window).toMatch(/Today, .* – Tomorrow, /);
-    expect(slot.note).toMatch(/passed 3h 17m ago/);
+    expect(slot.note).toMatch(/running 3h 17m late/);
   });
-  it('marks an ops-expired order as expired', () => {
+  it('measures a closed window from its end, not its start', () => {
+    // 24h rental booked 11 Nov 3:21 PM IST, ending 12 Nov 3:21 PM IST, seen 1h 12m
+    // later: "1h 12m ago", never "25h ago".
+    const slot = deliverySlot(
+      { startAt: iso('2026-11-11T09:51:00Z'), endAt: iso('2026-11-12T09:51:00Z') },
+      T('2026-11-12T11:03:00Z')
+    )!;
+    expect(slot.state).toBe('closed');
+    expect(slot.lateMinutes).toBe(1512); // 25h 12m since the start
+    expect(slot.overdueMinutes).toBe(72); // 1h 12m since the window closed
+    expect(slot.note).toMatch(/closed 1h 12m ago/);
+    expect(slot.note).not.toMatch(/25h/);
+  });
+  it('marks an ops-expired order as closed', () => {
     const slot = deliverySlot(
       { startAt: iso('2026-10-12T10:30:00Z'), expiredAt: iso('2026-10-12T06:00:00Z') },
       T('2026-10-12T06:00:00Z')
     )!;
-    expect(slot.state).toBe('expired');
+    expect(slot.state).toBe('closed');
+    expect(slot.overdueMinutes).toBe(0);
   });
   it('returns null without a readable start', () => {
     expect(deliverySlot({}, T('2026-10-12T06:00:00Z'))).toBeNull();

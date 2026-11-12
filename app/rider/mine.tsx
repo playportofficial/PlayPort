@@ -51,8 +51,10 @@ export default function RiderMineScreen() {
                 >
                   {rental.started
                     ? `Rental running${rental.hours ? ` · ${rental.hours}h` : ''}${rental.endLabel ? ` · returns ${rental.endLabel}` : ''}`
-                    : slot && slot.state !== 'upcoming'
-                      ? `Delivery slot ${slot.startLabel} · ${formatLate(slot.lateMinutes)} late`
+                    : slot?.state === 'closed'
+                      ? `Window closed ${formatLate(slot.overdueMinutes)} ago`
+                      : slot?.state === 'late'
+                        ? `Delivery slot ${slot.startLabel} · ${formatLate(slot.lateMinutes)} late`
                       : `Booked ${rental.range}${rental.hours ? ` · ${rental.hours}h` : ''} · timer starts at handover`}
                 </Text>
               ) : null}
