@@ -417,6 +417,55 @@ async function pushNotification(
   }
 }
 
+type NotifyPayload = { title: string; body: string; type: string; orderId?: string };
+
+/**
+ * Riders sign in with the same auth uid as customers, but their profile lives in
+ * `riders/`, so every customer-side push above misses them. Rider alerts use the
+ * same per-user inbox the app renders, which is what makes them visible in the
+ * Alerts tab even when the browser blocks the system notification.
+ */
+async function notifyRider(riderId: string | null | undefined, payload: NotifyPayload) {
+  if (!riderId) return;
+  try {
+    await pushNotification(riderId, payload);
+  } catch (err) {
+    logger.warn('Rider push failed', { riderId, error: String(err) });
+  }
+}
+
+/**
+ * A dispatchable run has to reach every active rider in its hub, not only whoever
+ * happens to have the Available tab open. Equality filters only, so no composite
+ * index is needed.
+ */
+async function notifyHubRiders(
+  hubId: unknown,
+  payload: NotifyPayload,
+  exceptRiderId?: string | null
+) {
+  if (typeof hubId !== 'string' || !hubId) return;
+  try {
+    const snap = await db
+      .collection('riders')
+      .where('active', '==', true)
+      .where('hubId', '==', hubId)
+      .get();
+    await Promise.all(
+      snap.docs.filter((d) => d.id !== exceptRiderId).map((d) => notifyRider(d.id, payload))
+    );
+  } catch (err) {
+    logger.warn('Rider broadcast failed', { hubId, error: String(err) });
+  }
+}
+
+/** One-line order summary for a rider alert: where, how long, how much. */
+function runSummary(order: Record<string, any>): string {
+  const where = order.addressLabel || order.addressFull || 'Delivery';
+  const hours = typeof order.hours === 'number' ? ` · ${order.hours}h` : '';
+  return `${where}${hours} · ₹${Math.round(Number(order.total) || 0)}`;
+}
+
 async function resolveHubId(requested?: string, userId?: string): Promise<string> {
   if (requested) {
     const snap = await db.collection('hubs').doc(requested).get();
@@ -1168,6 +1217,18 @@ export const createBooking = onCall({ region: REGION }, async (request) => {
     orderId: id,
   });
 
+  // A COD order is dispatchable the moment it exists, so riders must hear about it
+  // rather than discovering it on their next refresh. Online orders are broadcast
+  // once payment confirms (confirmPayment).
+  if (isCod) {
+    await notifyHubRiders(hubId, {
+      title: 'New run available',
+      body: `${id} · ${runSummary(order)} · cash on delivery`,
+      type: 'delivery',
+      orderId: id,
+    });
+  }
+
   // Ops awareness: when a new order lands, post an ops-side alert so staff notice
   // it without having to poll the rider portal / order list specifically.
   // This is the doc the admin app watches/polls for "new order" alerts.
@@ -1292,6 +1353,14 @@ export const confirmPayment = onCall({ region: REGION }, async (request) => {
     title: 'Payment received',
     body: `${id} is confirmed and being packed.`,
     type: 'payment',
+    orderId: id,
+  });
+
+  // Paid and unassigned: put it in front of every rider in the hub.
+  await notifyHubRiders(order.hubId, {
+    title: 'New run available',
+    body: `${id} · ${runSummary(order)} · paid`,
+    type: 'delivery',
     orderId: id,
   });
 
@@ -1813,6 +1882,35 @@ export const onOrderHandedOver = onDocumentUpdated(
     const before = event.data?.before.data();
     const after = event.data?.after.data();
     if (!before || !after || !event.data) return;
+
+    // Rider alerts ride along on this trigger so a run can never be assigned or
+    // cancelled without the rider being told. They run before the handover guard
+    // below, which returns early for every other kind of update.
+    const riderId = typeof after.riderId === 'string' ? after.riderId : null;
+    if (riderId && riderId !== before.riderId) {
+      // claimRun sets riderAcceptedAt in the same write; ops assignment does not.
+      const acceptedByRider = after.riderAcceptedAt !== before.riderAcceptedAt;
+      if (!acceptedByRider) {
+        await notifyRider(riderId, {
+          title: 'Run assigned to you',
+          body: `${event.params.orderId} · ${runSummary(after)} — open My runs to start.`,
+          type: 'delivery',
+          orderId: event.params.orderId,
+        });
+      }
+    }
+    if (
+      riderId &&
+      after.status !== before.status &&
+      ['cancelled', 'refunded'].includes(String(after.status))
+    ) {
+      await notifyRider(riderId, {
+        title: 'Run cancelled',
+        body: `${event.params.orderId} was cancelled${after.cancelReason ? ` — ${after.cancelReason}` : ''}. Do not deliver it.`,
+        type: 'delivery',
+        orderId: event.params.orderId,
+      });
+    }
     // Handover can land the order on "delivered" (ops) or straight on "active" (the
     // rider verifies the door code once). Both start the rental clock.
     const handedOver =
@@ -1952,6 +2050,16 @@ export const completeReturn = onCall({ region: REGION }, async (request) => {
     type: 'order',
     orderId: id,
   });
+
+  // Ops closing a run should not leave the rider thinking a pickup is still owed.
+  if (order.riderId && order.riderId !== uid) {
+    await notifyRider(order.riderId, {
+      title: 'Run closed by ops',
+      body: `${id} is completed — nothing left to collect.`,
+      type: 'order',
+      orderId: id,
+    });
+  }
 
   return { ok: true };
 });

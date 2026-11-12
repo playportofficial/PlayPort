@@ -4,25 +4,48 @@ import { firebaseApp } from '@/lib/firebase';
 import { callRegisterFcmToken } from '@/lib/functions';
 
 /**
- * Web FCM registration. Requires a service worker at /firebase-messaging-sw.js
- * and EXPO_PUBLIC_FIREBASE_VAPID_KEY. No-ops when unsupported.
+ * Why a device may never receive a push, in a form the UI can explain:
+ * - unsupported: no service worker / not a browser (native builds included)
+ * - no-key: EXPO_PUBLIC_FIREBASE_VAPID_KEY is empty, so FCM cannot mint a token
+ * - blocked: the browser or the user denied notification permission
+ * - error: registration threw (see console)
  */
-export async function registerWebPushIfAvailable() {
-  if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+export type WebPushState = 'granted' | 'no-key' | 'blocked' | 'unsupported' | 'error';
+
+/**
+ * Registers this browser for FCM web push and stores the token on the signed-in
+ * user. Must be called from a user gesture the first time (Chrome ignores
+ * permission prompts raised during load), which is what the rider Alerts tab does.
+ */
+export async function enableWebPush(): Promise<WebPushState> {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') return 'unsupported';
   try {
-    const supported = await isSupported();
-    if (!supported) return;
+    if (!(await isSupported())) return 'unsupported';
+
     const vapid = process.env.EXPO_PUBLIC_FIREBASE_VAPID_KEY;
     if (!vapid) {
-      console.info('FCM: set EXPO_PUBLIC_FIREBASE_VAPID_KEY to enable web push');
-      return;
+      console.warn('FCM: EXPO_PUBLIC_FIREBASE_VAPID_KEY is empty — web push cannot register.');
+      return 'no-key';
     }
-    const messaging = getMessaging(firebaseApp);
-    const permission = await Notification.requestPermission();
-    if (permission !== 'granted') return;
-    const token = await getToken(messaging, { vapidKey: vapid });
-    if (token) await callRegisterFcmToken(token);
+
+    if (typeof Notification === 'undefined') return 'unsupported';
+    if (Notification.permission === 'denied') return 'blocked';
+    if (Notification.permission !== 'granted') {
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') return 'blocked';
+    }
+
+    const token = await getToken(getMessaging(firebaseApp), { vapidKey: vapid });
+    if (!token) return 'error';
+    await callRegisterFcmToken(token);
+    return 'granted';
   } catch (err) {
-    console.warn('FCM register skipped', err);
+    console.warn('FCM register failed', err);
+    return 'error';
   }
+}
+
+/** Fire-and-forget registration used on sign-in. */
+export async function registerWebPushIfAvailable() {
+  return enableWebPush();
 }

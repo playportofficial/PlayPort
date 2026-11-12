@@ -20,6 +20,11 @@ import { useRiderLocationTracking } from '@/hooks/useRiderLocationTracking';
 const NAV = [
   { href: '/rider', label: 'Available', match: (p: string) => p === '/rider' || p === '/rider/' },
   { href: '/rider/mine', label: 'My runs', match: (p: string) => p.startsWith('/rider/mine') },
+  {
+    href: '/rider/notifications',
+    label: 'Alerts',
+    match: (p: string) => p.startsWith('/rider/notifications'),
+  },
 ] as const;
 
 export default function RiderLayout() {
@@ -31,6 +36,9 @@ export default function RiderLayout() {
   const bootstrap = useRiderStore((s) => s.bootstrap);
   const rider = useRiderStore((s) => s.rider);
   const mine = useRiderStore((s) => s.mine);
+  // New-run, assignment and cancellation alerts share the customer inbox for this
+  // auth uid, so the badge is just the unread count on it.
+  const unreadAlerts = useAppStore((s) => s.notifications.filter((n) => !n.read).length);
   const [checking, setChecking] = useState(true);
   const [allowed, setAllowed] = useState(false);
   const desktop = width >= 900;
@@ -142,7 +150,10 @@ export default function RiderLayout() {
                   style={[styles.navItem, active && styles.navItemActive]}
                   onPress={() => router.push(item.href as never)}
                 >
-                  <Text style={[styles.navLabel, active && styles.navLabelActive]}>{item.label}</Text>
+                  <Text style={[styles.navLabel, active && styles.navLabelActive]}>
+                    {item.label}
+                    {item.label === 'Alerts' && unreadAlerts ? ` · ${unreadAlerts}` : ''}
+                  </Text>
                 </Pressable>
               );
             })}
@@ -163,6 +174,7 @@ export default function RiderLayout() {
             <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.page } }}>
               <Stack.Screen name="index" />
               <Stack.Screen name="mine" />
+              <Stack.Screen name="notifications" />
               <Stack.Screen name="order/[id]" />
             </Stack>
           </View>
