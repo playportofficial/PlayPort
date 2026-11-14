@@ -401,9 +401,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     // Push any local cart built while guest, including the item queued before OTP.
+    // A rejected cart write must never keep the user out of a session they already
+    // authenticated — they can retry the add on the product page.
     const { cart } = get();
     if (cart.length) {
-      await replaceUserCart(user.id, cart);
+      await replaceUserCart(user.id, cart).catch((err) => {
+        console.warn('Guest cart sync failed; sign-in continues', err);
+      });
     }
   },
 

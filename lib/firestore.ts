@@ -160,8 +160,31 @@ export async function fetchUserCart(userId: string): Promise<CartItem[]> {
   return mapDocs<CartItem>(snap);
 }
 
+/**
+ * Firestore rejects `undefined` anywhere in a document, including inside nested
+ * objects and arrays. A cart line is mostly optional fields (`addons`,
+ * `inventoryUnitId`, `experienceId` …), so writing one raw threw
+ * "Unsupported field value: undefined" and took the whole sign-in down with it.
+ */
+function stripUndefinedDeep<T>(value: T): T {
+  if (Array.isArray(value)) {
+    const list = value
+      .map((entry) => stripUndefinedDeep(entry))
+      .filter((entry) => entry !== undefined);
+    return list as unknown as T;
+  }
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      if (entry !== undefined) out[key] = stripUndefinedDeep(entry);
+    }
+    return out as T;
+  }
+  return value;
+}
+
 export async function upsertCartItem(userId: string, item: CartItem) {
-  await setDoc(doc(db, 'users', userId, 'cart', item.id), item, { merge: true });
+  await setDoc(doc(db, 'users', userId, 'cart', item.id), stripUndefinedDeep(item), { merge: true });
 }
 
 export async function deleteCartItem(userId: string, itemId: string) {
@@ -254,5 +277,5 @@ export async function fetchReviews(productId?: string): Promise<Review[]> {
 }
 
 export async function createReviewDoc(review: Review & { userId: string; createdAt: string }) {
-  await setDoc(doc(db, 'reviews', review.id), review);
+  await setDoc(doc(db, 'reviews', review.id), stripUndefinedDeep(review));
 }

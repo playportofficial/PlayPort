@@ -86,6 +86,9 @@ export default function OtpScreen() {
       }
     } catch (e) {
       const raw = e instanceof Error ? e.message : 'Invalid OTP';
+      // Keep the real cause in the console: the friendly copy below is deliberately
+      // vague, and a swallowed Firestore data error is impossible to diagnose from it.
+      console.warn('OTP verify failed:', e);
       const friendly =
         /unsupported field value|undefined|setDoc/i.test(raw)
           ? 'Couldn’t finish sign-in. Please try again.'
