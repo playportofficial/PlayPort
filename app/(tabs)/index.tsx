@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { useState, type ReactElement } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Screen } from '@/components/layout/Screen';
 import { OrderingPausedBanner } from '@/components/layout/OrderingPausedBanner';
@@ -8,6 +8,7 @@ import { ServiceHoursBanner } from '@/components/layout/ServiceHoursBanner';
 import { ResponsiveGrid } from '@/components/layout/ResponsiveGrid';
 import { LegalLinks } from '@/components/legal/LegalLinks';
 import { ProductCard } from '@/components/products/ProductCard';
+import { PrebookPromo } from '@/components/home/PrebookPromo';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { colors, fonts, layout, spacing, typeScale } from '@/constants/theme';
 import { useResponsive } from '@/hooks/useResponsive';
@@ -91,6 +92,29 @@ export default function HomeScreen() {
     />
   );
 
+  // GTA 6 lands on 19 Nov: the teaser card sits right beside the first kit and, once
+  // ops list the product, borrows its photo and opens its own page.
+  const gta6 = products.find((product) => /gta\s*(6|vi)\b/i.test(`${product.name} ${product.shortName}`));
+  const tiles: { key: string; node: ReactElement }[] = products.map((product) => ({
+    key: product.id,
+    node: renderCard(product),
+  }));
+  tiles.splice(Math.min(1, tiles.length), 0, {
+    key: 'prebook-gta6',
+    node: (
+      <PrebookPromo
+        product={gta6}
+        onPress={() => {
+          if (gta6) {
+            router.push(`/product/${gta6.id}`);
+            return;
+          }
+          showToast('GTA 6 pre-books open 19 Nov');
+        }}
+      />
+    ),
+  });
+
   return (
     <Screen showCart showFloatingCart showSearch>
       <ScrollView
@@ -128,8 +152,8 @@ export default function HomeScreen() {
                 </Text>
               </View>
               <ResponsiveGrid columns={productColumns} gap={gap}>
-                {products.map((product) => (
-                  <View key={product.id}>{renderCard(product)}</View>
+                {tiles.map((tile) => (
+                  <View key={tile.key}>{tile.node}</View>
                 ))}
               </ResponsiveGrid>
               <LegalLinks />
@@ -139,10 +163,10 @@ export default function HomeScreen() {
               <OrderingPausedBanner style={{ marginTop: spacing.md }} />
               <ServiceAreaBanner />
               <ServiceHoursBanner />
-              {products.map((product) => (
-              <View key={product.id} style={{ height: cardHeight, marginBottom: CARD_GAP }}>
-                {renderCard(product)}
-              </View>
+              {tiles.map((tile) => (
+                <View key={tile.key} style={{ height: cardHeight, marginBottom: CARD_GAP }}>
+                  {tile.node}
+                </View>
               ))}
               <LegalLinks />
             </>
