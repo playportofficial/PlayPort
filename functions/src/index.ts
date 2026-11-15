@@ -2,6 +2,7 @@ import { createHmac, randomBytes, randomInt, timingSafeEqual } from 'crypto';
 import { initializeApp } from 'firebase-admin/app';
 import { FieldValue, getFirestore, type DocumentData, type DocumentReference } from 'firebase-admin/firestore';
 import { getMessaging } from 'firebase-admin/messaging';
+import { getAuth } from 'firebase-admin/auth';
 import { logger } from 'firebase-functions';
 import { onRequest } from 'firebase-functions/v2/https';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
@@ -457,6 +458,80 @@ async function notifyHubRiders(
   } catch (err) {
     logger.warn('Rider broadcast failed', { hubId, error: String(err) });
   }
+}
+
+/**
+ * Ops devices, resolved from the same allowlist firestore.rules uses for isOps().
+ * Cached per instance so a burst of orders doesn't re-list auth users each time.
+ */
+let opsUidsCache: { at: number; uids: string[] } | null = null;
+
+async function resolveOpsUids(): Promise<string[]> {
+  if (opsUidsCache && Date.now() - opsUidsCache.at < 5 * 60 * 1000) return opsUidsCache.uids;
+  const uids: string[] = [];
+  try {
+    let pageToken: string | undefined;
+    do {
+      const page = await getAuth().listUsers(1000, pageToken);
+      for (const account of page.users) {
+        const phone = (account.phoneNumber ?? '').replace(/\D/g, '');
+        if (
+          account.customClaims?.admin === true ||
+          account.email === 'paulabraham.net@gmail.com' ||
+          phone.endsWith('9346577926')
+        ) {
+          uids.push(account.uid);
+        }
+      }
+      pageToken = page.pageToken;
+    } while (pageToken);
+  } catch (err) {
+    logger.warn('Could not resolve ops accounts for push', { error: String(err) });
+  }
+  opsUidsCache = { at: Date.now(), uids };
+  return uids;
+}
+
+/**
+ * Staff awareness for anything that costs or earns money. The `ops_notifications`
+ * doc is the durable record the admin app lists; the push is what makes someone
+ * actually look. Writing the doc first means a push failure never loses the alert.
+ */
+async function notifyOps(payload: {
+  kind: OpsNotification['kind'];
+  severity: OpsNotification['severity'];
+  title: string;
+  body: string;
+  orderId?: string;
+}) {
+  const nowIso = new Date().toISOString();
+  try {
+    await db.collection('ops_notifications').doc().set({
+      kind: payload.kind,
+      severity: payload.severity,
+      title: payload.title,
+      body: payload.body,
+      orderId: payload.orderId ?? null,
+      read: false,
+      createdAt: nowIso,
+      eventAt: nowIso,
+    });
+  } catch (err) {
+    logger.error('Could not write ops alert', { title: payload.title, error: String(err) });
+  }
+
+  const uids = await resolveOpsUids();
+  if (!uids.length) return;
+  await Promise.all(
+    uids.map((uid) =>
+      pushNotification(uid, {
+        title: payload.title,
+        body: payload.body,
+        type: 'order',
+        orderId: payload.orderId,
+      }).catch((err) => logger.warn('Ops push failed', { uid, error: String(err) }))
+    )
+  );
 }
 
 /** One-line order summary for a rider alert: where, how long, how much. */
@@ -1229,20 +1304,15 @@ export const createBooking = onCall({ region: REGION }, async (request) => {
     });
   }
 
-  // Ops awareness: when a new order lands, post an ops-side alert so staff notice
-  // it without having to poll the rider portal / order list specifically.
-  // This is the doc the admin app watches/polls for "new order" alerts.
-  const opsKind: OpsNotification['kind'] = isCod ? 'dispatch' : 'new_order';
-  const opsSeverity: OpsNotification['severity'] = isCod ? 'info' : 'warning';
-  await db.collection('ops_notifications').doc().set({
-    kind: opsKind,
+  // Ops awareness: an order that nobody knows about is the same as no order. The
+  // slot time is spelled out ("starts 15 Nov, 12:00 pm") because a scheduled run
+  // booked for tomorrow is exactly the kind that gets missed.
+  await notifyOps({
+    kind: isCod ? 'dispatch' : 'new_order',
+    severity: isCod ? 'info' : 'warning',
     title: isCod ? `New COD order: ${id}` : `New order: ${id}`,
-    body: `${id} · ${addressLabel} · ₹${expectedTotal} · ${isCod ? 'cash on delivery' : 'online payment'} · ${startAt.getTime() - now > 3 * 60 * 60 * 1000 ? 'scheduled' : 'ASAP'}`,
+    body: `${id} · ${addressLabel} · ₹${expectedTotal} · ${isCod ? 'cash on delivery' : 'awaiting payment'} · starts ${formatInIndia(startAt)}`,
     orderId: id,
-    severity: opsSeverity,
-    read: false,
-    createdAt: nowIso,
-    eventAt: nowIso,
   });
 
   return { orderId: id, order, holdExpiresAt: isCod ? null : holdExpiresAt };
@@ -1361,6 +1431,15 @@ export const confirmPayment = onCall({ region: REGION }, async (request) => {
     title: 'New run available',
     body: `${id} · ${runSummary(order)} · paid`,
     type: 'delivery',
+    orderId: id,
+  });
+
+  // Money in the bank is the moment ops must know, not the moment the order was made.
+  await notifyOps({
+    kind: 'payment_received',
+    severity: 'warning',
+    title: `Paid booking: ${id}`,
+    body: `${id} · ₹${Math.round(Number(order.total) || 0)} · ${runSummary(order)} · starts ${formatInIndia(new Date(order.startAt))}`,
     orderId: id,
   });
 
@@ -2875,8 +2954,24 @@ export const razorpayWebhook = onRequest(
         const expectedPaise = Math.round((Number(payData?.amount) || 0) * 100);
         if (!paySnap.exists || !payData?.orderId) {
           logger.warn('Webhook for unknown Razorpay order', { razorpayOrderId, event });
+          // Money was captured that we cannot tie to an order: never let this sit in
+          // a log. Ops must reconcile it by hand.
+          await notifyOps({
+            kind: 'flag',
+            severity: 'critical',
+            title: 'Payment with no order',
+            body: `Razorpay captured ${razorpayOrderId} with no matching order record. Reconcile before fulfilling.`,
+            orderId: payData?.orderId as string | undefined,
+          });
         } else if (paidPaise !== expectedPaise) {
           logger.error('Webhook amount mismatch — not confirming', { razorpayOrderId, paidPaise, expectedPaise });
+          await notifyOps({
+            kind: 'flag',
+            severity: 'critical',
+            title: 'Payment amount mismatch',
+            body: `${payData.orderId}: paid ₹${paidPaise / 100} against an expected ₹${expectedPaise / 100}. Not confirmed automatically.`,
+            orderId: payData.orderId as string,
+          });
         } else {
           await paySnap.ref.update({
             status: 'paid',
