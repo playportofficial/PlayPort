@@ -101,7 +101,7 @@ export async function riderDelete(id: string): Promise<void> {
 
 export function watchRiderOrders(
   riderId: string,
-  cb: (available: Order[], mine: Order[]) => void
+  cb: (available: Order[], mine: Order[], upcoming: Order[]) => void
 ): Unsubscribe {
   return onSnapshot(collection(db, 'orders'), (snap) => {
     const all = snap.docs.map((d) => ({ id: d.id, ...d.data() }) as Order);
@@ -119,10 +119,24 @@ export function watchRiderOrders(
           isDispatchable(o, now)
       )
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    // Pre-booked runs for this hub that are not claimable yet. Without these a rider
+    // sees an empty pool while a paid order sits two days out.
+    const upcoming = all
+      .filter(
+        (o) =>
+          !o.riderId &&
+          (!o.paymentStatus || o.paymentStatus === 'paid' || o.paymentStatus === 'cod') &&
+          ['confirmed', 'preparing'].includes(o.status) &&
+          !o.expiredAt &&
+          o.startAt &&
+          new Date(o.startAt).getTime() > now.getTime() &&
+          !isDispatchable(o, now)
+      )
+      .sort((a, b) => String(a.startAt).localeCompare(String(b.startAt)));
     const mine = all
       .filter((o) => o.riderId === riderId)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    cb(available, mine);
+    cb(available, mine, upcoming);
   });
 }
 

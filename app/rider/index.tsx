@@ -12,6 +12,7 @@ export default function RiderAvailableScreen() {
   const { horizontalPadding } = useResponsive();
   const rider = useRiderStore((s) => s.rider);
   const available = useRiderStore((s) => s.available);
+  const upcoming = useRiderStore((s) => s.upcoming);
   const error = useRiderStore((s) => s.error);
   const accept = useRiderStore((s) => s.accept);
 
@@ -79,6 +80,37 @@ export default function RiderAvailableScreen() {
           );
         })
       )}
+
+      {upcoming.length ? (
+        <View style={styles.upcomingBlock}>
+          <Text style={styles.upcomingTitle}>Scheduled ahead · {upcoming.length}</Text>
+          <Text style={styles.meta}>
+            Booked for a later slot. Each one drops into Available 60 minutes before its
+            delivery time, so you can plan your day now.
+          </Text>
+          {upcoming.map((order) => {
+            const slot = deliverySlot(order);
+            return (
+              <View key={order.id} style={styles.card}>
+                <View style={styles.row}>
+                  <Text style={styles.cardTitle}>{order.id}</Text>
+                  <StatusBadge status={order.status} label={riderStatusLabel(order.status)} />
+                </View>
+                {slot ? (
+                  <Text style={styles.meta}>
+                    Slot {slot.window}
+                    {slot.hours ? ` · ${slot.hours}h` : ''}
+                  </Text>
+                ) : null}
+                <Text style={styles.meta}>{order.addressFull || order.addressLabel}</Text>
+                <Text style={styles.meta}>
+                  {order.items?.length ?? 0} items · ₹{order.total} · claimable later
+                </Text>
+              </View>
+            );
+          })}
+        </View>
+      ) : null}
     </ScrollView>
   );
 }
@@ -113,5 +145,11 @@ const styles = StyleSheet.create({
   meta: { fontFamily: fonts.body, fontSize: typeScale.small, color: colors.secondaryText, lineHeight: 18 },
   metaWarn: { color: colors.danger },
   actions: { flexDirection: 'row', alignItems: 'center', gap: 16, marginTop: 4 },
+  upcomingBlock: { marginTop: spacing.xl, gap: spacing.sm },
+  upcomingTitle: {
+    fontFamily: fonts.heading,
+    fontSize: typeScale.title,
+    color: colors.primaryText,
+  },
   link: { fontFamily: fonts.bodyMedium, color: colors.playportOrange, fontSize: typeScale.body },
 });

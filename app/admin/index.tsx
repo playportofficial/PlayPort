@@ -80,6 +80,7 @@ export default function AdminOverviewScreen() {
       href: '/admin/inventory',
     },
     { label: 'Open deliveries', value: counts?.openOrders ?? '—', href: '/admin/orders' },
+    { label: 'Payments', value: 'Ledger', href: '/admin/payments' },
     { label: 'Hubs', value: counts?.hubs ?? '—', href: '/admin/hubs' },
     { label: 'Reviews', value: counts?.reviews ?? '—', href: '/admin/reviews' },
     { label: 'Feedback', value: 'Inbox', href: '/admin/feedback' },

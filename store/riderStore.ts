@@ -12,6 +12,8 @@ interface RiderState {
   ready: boolean;
   rider: Rider | null;
   available: Order[];
+  /** Paid runs for this hub whose slot is still ahead — visible, not claimable yet. */
+  upcoming: Order[];
   mine: Order[];
   error: string | null;
   bootstrap: () => Promise<() => void>;
@@ -25,6 +27,7 @@ export const useRiderStore = create<RiderState>((set, get) => ({
   ready: false,
   rider: null,
   available: [],
+  upcoming: [],
   mine: [],
   error: null,
 
@@ -35,15 +38,17 @@ export const useRiderStore = create<RiderState>((set, get) => ({
     try {
       const rider = await resolveRiderProfile();
       if (!rider || !rider.active) {
-        set({ ready: true, rider: null, available: [], mine: [] });
+        set({ ready: true, rider: null, available: [], upcoming: [], mine: [] });
         return () => undefined;
       }
       set({ rider, ready: true });
-      unsub = watchRiderOrders(rider.id, (available, mine) => {
-        const hubFiltered = rider.hubId
-          ? available.filter((o) => !o.hubId || o.hubId === rider.hubId)
-          : available;
-        set({ available: hubFiltered, mine });
+      unsub = watchRiderOrders(rider.id, (available, mine, upcoming) => {
+        const inHub = (o: Order) => !rider.hubId || !o.hubId || o.hubId === rider.hubId;
+        set({
+          available: available.filter(inHub),
+          upcoming: upcoming.filter(inHub),
+          mine,
+        });
       });
       return () => {
         unsub?.();

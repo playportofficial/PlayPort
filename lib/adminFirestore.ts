@@ -13,6 +13,7 @@ import {
   type DocumentData,
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
+import type { PaymentRecord } from '@/types';
 import { callCompleteReturn, callExecuteRefundBooking, callUpdateOrderStatus } from '@/lib/functions';
 import type {
   AppConfig,
@@ -187,6 +188,21 @@ export async function adminListOrders(status?: OrderStatus): Promise<Order[]> {
   } catch {
     const snap = await getDocs(collection(db, 'orders'));
     return mapDocs<Order>(snap).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+}
+
+/** Every captured payment, newest first — the ledger that answers "he says he paid". */
+export async function adminListPayments(): Promise<PaymentRecord[]> {
+  try {
+    const snap = await getDocs(
+      query(collection(db, 'payments'), orderBy('createdAt', 'desc'), limit(100))
+    );
+    return mapDocs<PaymentRecord>(snap);
+  } catch {
+    const snap = await getDocs(collection(db, 'payments'));
+    return mapDocs<PaymentRecord>(snap)
+      .sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')))
+      .slice(0, 100);
   }
 }
 

@@ -10,8 +10,9 @@ import type { OrderStatus } from '@/types';
 import { orderStatusLabel } from '@/utils/format';
 import { deliverySlot } from '@/utils/serviceHours';
 
-const FILTERS: { id: 'open' | 'all' | OrderStatus; label: string }[] = [
+const FILTERS: { id: 'open' | 'all' | 'scheduled' | OrderStatus; label: string }[] = [
   { id: 'open', label: 'Open' },
+  { id: 'scheduled', label: 'Scheduled' },
   { id: 'all', label: 'All' },
   { id: 'pending_payment', label: 'Unpaid' },
   { id: 'confirmed', label: 'Confirmed' },
@@ -56,6 +57,15 @@ export default function AdminOrdersScreen() {
     const q = query.trim().toLowerCase();
     let list = orders;
     if (filter === 'open') list = list.filter((o) => OPEN.includes(o.status));
+    else if (filter === 'scheduled')
+      // Pre-booked runs, soonest first — the ones that never show up in a rider's
+      // pool because their slot is still days away.
+      list = list
+        .filter(
+          (o) =>
+            OPEN.includes(o.status) && o.startAt && new Date(o.startAt).getTime() > Date.now()
+        )
+        .sort((a, b) => String(a.startAt).localeCompare(String(b.startAt)));
     else if (filter !== 'all') list = list.filter((o) => o.status === filter);
     if (!q) return list;
     const digits = q.replace(/\D/g, '');
