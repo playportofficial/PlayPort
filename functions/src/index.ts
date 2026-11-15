@@ -12,8 +12,10 @@ import { defineString } from 'firebase-functions/params';
 import {
   cartItemHours,
   expectedLineTotal,
+  experienceAddonOptions,
   normalizeFnProduct,
   priceForAddon,
+  type FnAddon,
   istDayStartMs,
   priceForHourly,
   productForStart,
@@ -993,17 +995,22 @@ export const createBooking = onCall({ region: REGION }, async (request) => {
         throw new HttpsError('not-found', `Combo ${line.name || line.experienceId} not found`);
       }
       const expData = expSnap.data()!;
+      // Combos rarely carry their own add-on pricing, so the consoles inside them are
+      // what make an extra controller available — and priced — on the combo.
+      const comboProducts: { id: string; addons?: FnAddon[] }[] = [];
       for (const pid of (expData?.productIds ?? []) as string[]) {
         const inner = (await db.collection('products').doc(pid).get()).data();
+        comboProducts.push({ id: pid, addons: (inner?.addons ?? []) as FnAddon[] });
         assertLaunched(startAt.getTime(), inner?.availableFrom, String(inner?.shortName || inner?.name || pid));
       }
       const plans = (expData?.plans ?? []) as { id?: string; hours?: number; price?: number }[];
-      const expAddons = (expData?.addons ?? []) as {
-        id: string;
-        name: string;
-        maxQuantity: number;
-        pricing: { perHour: number; perHourMaxPlanHours: number; flatPrice: number; flatMinPlanHours: number; tiers?: { upToHours: number; price: number; mode?: 'flat' | 'hourly' }[] };
-      }[];
+      const expAddons = experienceAddonOptions(
+        {
+          addons: (expData?.addons ?? []) as FnAddon[],
+          productIds: (expData?.productIds ?? []) as string[],
+        },
+        comboProducts
+      );
       const lineHours = line.hours ?? 12;
       let expectedAddons = 0;
       for (const a of line.addons ?? []) {

@@ -30,8 +30,8 @@ import {
   addonsTotal,
   defaultExperiencePlan,
   describeControllerPrice,
+  experienceAddonOptions,
   experiencePlans,
-  isControllerAddon,
   priceForAddon,
 } from '@/utils/rentalPricing';
 
@@ -72,7 +72,9 @@ export default function ExperienceDetailScreen() {
         experiences
       )
     : [];
-  const controllerAddons = (experience?.addons ?? []).filter((a) => isControllerAddon(a));
+  // Combos rarely carry their own add-on pricing; the consoles inside them do, so an
+  // extra controller stays orderable on every combo rather than only hand-priced ones.
+  const controllerAddons = experienceAddonOptions(experience, products);
   const selectedAddons = Object.entries(addonQty)
     .filter(([, q]) => q > 0)
     .map(([addonId, quantity]) => ({ id: addonId, quantity }));

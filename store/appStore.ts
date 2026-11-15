@@ -50,6 +50,7 @@ import { isPlaceholderName } from '@/utils/onboarding';
 import {
   addonsTotal,
   computeAddonLines,
+  experienceAddonOptions,
   defaultExperiencePlan,
   defaultPlan,
   experiencePlans,
@@ -515,7 +516,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!exp) return;
     const plan =
       experiencePlans(exp).find((p) => p.id === planId) ?? defaultExperiencePlan(exp);
-    const catalog = exp.addons ?? [];
+    const catalog = experienceAddonOptions(exp, useCatalogStore.getState().products);
     const addonLines = addonSelections
       .filter((s) => s.quantity > 0)
       .map((s) => {
@@ -594,7 +595,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             plans.find((p) => p.id === patch.planId) ??
             plans.find((p) => p.id === c.planId) ??
             defaultExperiencePlan(exp);
-          const catalog = exp.addons ?? [];
+          const catalog = experienceAddonOptions(exp, products);
           const selected =
             patch.addons ??
             (c.addons ?? []).map((a) => ({ id: a.id, quantity: a.quantity }));

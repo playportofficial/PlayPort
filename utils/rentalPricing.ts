@@ -145,6 +145,32 @@ export function isControllerAddon(addon: { id: string; name: string }): boolean 
   return addon.id === 'extra-controller' || /controller/i.test(addon.name);
 }
 
+/**
+ * Extra-controller options for a combo. A combo may carry its own add-on pricing, but
+ * when it doesn't, fall back to the controller add-ons of the consoles it includes —
+ * otherwise the option disappears for every combo nobody priced by hand.
+ */
+export function experienceAddonOptions(
+  experience: { addons?: ProductAddon[]; productIds?: string[] } | null | undefined,
+  products: { id: string; addons?: ProductAddon[] }[]
+): ProductAddon[] {
+  const own = (experience?.addons ?? []).filter((a) => isControllerAddon(a));
+  if (own.length) return own;
+
+  const included = new Set(experience?.productIds ?? []);
+  const seen = new Set<string>();
+  const derived: ProductAddon[] = [];
+  for (const product of products) {
+    if (!included.has(product.id)) continue;
+    for (const addon of product.addons ?? []) {
+      if (!isControllerAddon(addon) || seen.has(addon.id)) continue;
+      seen.add(addon.id);
+      derived.push(addon);
+    }
+  }
+  return derived;
+}
+
 /** Tiered lookup: smallest tier covering hours, else the largest tier. Hourly tiers multiply by hours. */
 export function priceForAddonTier(
   tiers: { upToHours: number; price: number; mode?: 'flat' | 'hourly' }[] | undefined,

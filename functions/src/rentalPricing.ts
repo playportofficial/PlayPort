@@ -116,6 +116,35 @@ export function priceForHourly(product: FnProduct, hours: number): number {
   return h.firstHourPrice + (n - 1) * h.extraHourPrice;
 }
 
+/**
+ * Extra-controller options for a combo: the combo's own add-ons when it has them,
+ * otherwise those of the consoles it includes. Mirrors utils/rentalPricing
+ * experienceAddonOptions so the server prices exactly what the app showed.
+ */
+export function experienceAddonOptions(
+  experience: { addons?: FnAddon[]; productIds?: string[] } | null | undefined,
+  products: { id: string; addons?: FnAddon[] }[]
+): FnAddon[] {
+  const isController = (addon: FnAddon) =>
+    addon.id === 'extra-controller' || /controller/i.test(addon.name);
+
+  const own = (experience?.addons ?? []).filter(isController);
+  if (own.length) return own;
+
+  const included = new Set(experience?.productIds ?? []);
+  const seen = new Set<string>();
+  const derived: FnAddon[] = [];
+  for (const product of products) {
+    if (!included.has(product.id)) continue;
+    for (const addon of product.addons ?? []) {
+      if (!isController(addon) || seen.has(addon.id)) continue;
+      seen.add(addon.id);
+      derived.push(addon);
+    }
+  }
+  return derived;
+}
+
 export function priceForAddon(addon: FnAddon, hours: number, quantity = 1): number {
   const q = Math.max(0, quantity);
   if (q <= 0) return 0;
