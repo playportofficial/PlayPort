@@ -12,18 +12,9 @@ import { useRiderStore } from '@/store/riderStore';
 import type { RunContact } from '@/lib/functions';
 import type { Order, OrderStatus } from '@/types';
 import { useNow } from '@/hooks/useNow';
-import { rentalWindow, riderStatusLabel } from '@/utils/format';
+import { prettyPhone, rentalWindow, riderStatusLabel } from '@/utils/format';
 import { deliverySlot, formatLate, isDispatchable } from '@/utils/serviceHours';
 import { isEnRoute, locationAgeLabel, remainingEtaMinutes } from '@/utils/liveEta';
-
-/** +919876543210 → "+91 98765 43210" so the number reads like one. */
-function prettyPhone(phone?: string): string | undefined {
-  const digits = (phone ?? '').replace(/\D/g, '');
-  if (digits.length === 12 && digits.startsWith('91')) {
-    return `+91 ${digits.slice(2, 7)} ${digits.slice(7)}`;
-  }
-  return phone;
-}
 
 /** One-line "what now" per status, so an accepted run explains itself. */
 const NEXT_STEP: Partial<Record<OrderStatus, string>> = {

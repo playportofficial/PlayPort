@@ -108,6 +108,27 @@ export function riderStatusLabel(status: string): string {
   return status === 'active' ? 'CUSTOMER USING KIT' : orderStatusLabel(status);
 }
 
+/** +919876543210 → "+91 98765 43210" so the number reads like one on a run card. */
+export function prettyPhone(phone?: string | null): string | undefined {
+  if (!phone) return undefined;
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length === 12 && digits.startsWith('91')) {
+    return `+91 ${digits.slice(2, 7)} ${digits.slice(7)}`;
+  }
+  return phone;
+}
+
+/** One-line contact for Deliveries cards: "Priya · +91 98765 43210". */
+export function riderContactLine(order: {
+  customerName?: string | null;
+  customerPhone?: string | null;
+}): string | undefined {
+  const line = [order.customerName, prettyPhone(order.customerPhone ?? undefined)]
+    .filter(Boolean)
+    .join(' · ');
+  return line || undefined;
+}
+
 export function generateOrderId(): string {
   const n = Math.floor(10000 + Math.random() * 89999);
   return `PLP-${n}`;

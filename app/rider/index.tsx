@@ -5,7 +5,7 @@ import { StatusBadge } from '@/components/ui/StatusBadge';
 import { colors, fonts, radii, spacing, typeScale } from '@/constants/theme';
 import { useResponsive } from '@/hooks/useResponsive';
 import { useRiderStore } from '@/store/riderStore';
-import { riderStatusLabel } from '@/utils/format';
+import { riderContactLine, riderStatusLabel } from '@/utils/format';
 import { deliverySlot, formatLate } from '@/utils/serviceHours';
 
 export default function RiderAvailableScreen() {
@@ -39,6 +39,7 @@ export default function RiderAvailableScreen() {
       ) : (
         available.map((order) => {
           const slot = deliverySlot(order);
+          const contact = riderContactLine(order);
           return (
             <View key={order.id} style={styles.card}>
               <View style={styles.row}>
@@ -46,6 +47,10 @@ export default function RiderAvailableScreen() {
                 <StatusBadge status={order.status} label={riderStatusLabel(order.status)} />
               </View>
               <Text style={styles.meta}>{order.addressFull || order.addressLabel}</Text>
+              {contact ? <Text style={styles.contact}>{contact}</Text> : null}
+              {order.addressInstructions ? (
+                <Text style={styles.meta}>{order.addressInstructions}</Text>
+              ) : null}
               {slot ? (
                 <Text style={[styles.meta, slot.state !== 'upcoming' && styles.metaWarn]}>
                   {slot.state === 'upcoming'
@@ -90,6 +95,7 @@ export default function RiderAvailableScreen() {
           </Text>
           {upcoming.map((order) => {
             const slot = deliverySlot(order);
+            const contact = riderContactLine(order);
             return (
               <View key={order.id} style={styles.card}>
                 <View style={styles.row}>
@@ -103,6 +109,10 @@ export default function RiderAvailableScreen() {
                   </Text>
                 ) : null}
                 <Text style={styles.meta}>{order.addressFull || order.addressLabel}</Text>
+                {contact ? <Text style={styles.contact}>{contact}</Text> : null}
+                {order.addressInstructions ? (
+                  <Text style={styles.meta}>{order.addressInstructions}</Text>
+                ) : null}
                 <Text style={styles.meta}>
                   {order.items?.length ?? 0} items · ₹{order.total} · claimable later
                 </Text>
@@ -143,6 +153,12 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   cardTitle: { fontFamily: fonts.heading, fontSize: typeScale.title, color: colors.primaryText },
   meta: { fontFamily: fonts.body, fontSize: typeScale.small, color: colors.secondaryText, lineHeight: 18 },
+  contact: {
+    fontFamily: fonts.bodyMedium,
+    fontSize: typeScale.small,
+    color: colors.primaryText,
+    lineHeight: 18,
+  },
   metaWarn: { color: colors.danger },
   actions: { flexDirection: 'row', alignItems: 'center', gap: 16, marginTop: 4 },
   upcomingBlock: { marginTop: spacing.xl, gap: spacing.sm },

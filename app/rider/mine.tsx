@@ -4,7 +4,7 @@ import { StatusBadge } from '@/components/ui/StatusBadge';
 import { colors, fonts, radii, spacing, typeScale } from '@/constants/theme';
 import { useResponsive } from '@/hooks/useResponsive';
 import { useRiderStore } from '@/store/riderStore';
-import { rentalWindow, riderStatusLabel } from '@/utils/format';
+import { rentalWindow, riderContactLine, riderStatusLabel } from '@/utils/format';
 import { deliverySlot, formatLate } from '@/utils/serviceHours';
 
 export default function RiderMineScreen() {
@@ -31,6 +31,7 @@ export default function RiderMineScreen() {
         mine.map((order) => {
           const rental = rentalWindow(order);
           const slot = deliverySlot(order);
+          const contact = riderContactLine(order);
           return (
             <Pressable
               key={order.id}
@@ -42,6 +43,10 @@ export default function RiderMineScreen() {
                 <StatusBadge status={order.status} label={riderStatusLabel(order.status)} />
               </View>
               <Text style={styles.meta}>{order.addressFull || order.addressLabel}</Text>
+              {contact ? <Text style={styles.contact}>{contact}</Text> : null}
+              {order.addressInstructions ? (
+                <Text style={styles.meta}>{order.addressInstructions}</Text>
+              ) : null}
               {rental ? (
                 <Text
                   style={[
@@ -88,4 +93,9 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   cardTitle: { fontFamily: fonts.heading, fontSize: typeScale.title, color: colors.primaryText },
   meta: { fontFamily: fonts.body, fontSize: typeScale.small, color: colors.secondaryText },
+  contact: {
+    fontFamily: fonts.bodyMedium,
+    fontSize: typeScale.small,
+    color: colors.primaryText,
+  },
 });
