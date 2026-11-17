@@ -1,11 +1,13 @@
 import { router } from 'expo-router';
-import { ScrollView, StyleSheet } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { ResponsiveGrid } from '@/components/layout/ResponsiveGrid';
 import { Screen } from '@/components/layout/Screen';
 import { EnterUp } from '@/components/motion/Enter';
+import { PlayPortWordmark } from '@/components/brand/PlayPortWordmark';
 import { ExperienceCard } from '@/components/products/ExperienceCard';
 import { EmptyState } from '@/components/ui/EmptyState';
-import { colors, spacing } from '@/constants/theme';
+import { COMBOS_ENABLED } from '@/constants/features';
+import { colors, fonts, spacing, typeScale } from '@/constants/theme';
 import { useResponsive } from '@/hooks/useResponsive';
 import { useCatalogStore } from '@/store/catalogStore';
 
@@ -15,6 +17,18 @@ export default function CombosScreen() {
   const ready = useCatalogStore((s) => s.ready);
   const hydrate = useCatalogStore((s) => s.hydrate);
   const cols = Math.max(1, experienceColumns);
+
+  if (!COMBOS_ENABLED) {
+    return (
+      <Screen showHeader={false} showCart={false} showDelivery={false}>
+        <View style={styles.paused}>
+          <PlayPortWordmark size={40} />
+          <Text style={styles.pausedTitle}>Combos are paused</Text>
+          <Text style={styles.pausedBody}>We’re updating bundles — book kits from Home for now.</Text>
+        </View>
+      </Screen>
+    );
+  }
 
   return (
     <Screen showFloatingCart pageTitle="Combos" showCart={false} showDelivery={false}>
@@ -59,4 +73,27 @@ export default function CombosScreen() {
 
 const styles = StyleSheet.create({
   scroll: { gap: spacing.xl, paddingTop: spacing.lg, backgroundColor: colors.surfaceAlt, flexGrow: 1 },
+  paused: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.xxl,
+    gap: spacing.sm,
+    backgroundColor: colors.page,
+  },
+  pausedTitle: {
+    color: colors.primaryText,
+    fontFamily: fonts.heading,
+    fontSize: 36,
+    letterSpacing: -1,
+    textAlign: 'center',
+  },
+  pausedBody: {
+    color: colors.secondaryText,
+    fontFamily: fonts.body,
+    fontSize: typeScale.title,
+    textAlign: 'center',
+    lineHeight: 26,
+    maxWidth: 340,
+  },
 });

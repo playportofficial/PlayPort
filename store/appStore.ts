@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { COMBOS_ENABLED } from '@/constants/features';
 import { PAYMENT_METHODS } from '@/constants/paymentMethods';
 import {
   confirmPhoneLogin,
@@ -512,6 +513,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   addExperienceToCart: (experienceId, planId, addonSelections = []) => {
+    if (!COMBOS_ENABLED) {
+      useFeelStore.getState().showToast('Combos are paused — book a kit instead');
+      return;
+    }
     const exp = useCatalogStore.getState().experiences.find((e) => e.id === experienceId);
     if (!exp) return;
     const plan =

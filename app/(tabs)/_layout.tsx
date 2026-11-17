@@ -9,6 +9,7 @@ import Animated, {
   withSpring,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { COMBOS_ENABLED } from '@/constants/features';
 import { colors, fonts, layout, radii } from '@/constants/theme';
 import { useResponsive } from '@/hooks/useResponsive';
 type IconName = keyof typeof Ionicons.glyphMap;
@@ -81,16 +82,22 @@ export default function TabsLayout() {
       />
       <Tabs.Screen
         name="combos"
-        options={{
-          title: 'Combos',
-          tabBarIcon: ({ color, focused }) => (
-            <TabIcon
-              name={focused ? 'layers' : 'layers-outline'}
-              color={String(color)}
-              focused={focused}
-            />
-          ),
-        }}
+        options={
+          COMBOS_ENABLED
+            ? {
+                title: 'Combos',
+                tabBarIcon: ({ color, focused }) => (
+                  <TabIcon
+                    name={focused ? 'layers' : 'layers-outline'}
+                    color={String(color)}
+                    focused={focused}
+                  />
+                ),
+              }
+            : {
+                href: null,
+              }
+        }
       />
       <Tabs.Screen
         name="experiences"

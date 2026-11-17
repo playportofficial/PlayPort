@@ -21,6 +21,7 @@ import { useResponsive } from '@/hooks/useResponsive';
 import { useAppStore } from '@/store/appStore';
 import { useCatalogStore } from '@/store/catalogStore';
 import { useFeelStore } from '@/store/feelStore';
+import { COMBOS_ENABLED } from '@/constants/features';
 import { useExitToHomeOnBack } from '@/hooks/useExitToHomeOnBack';
 import { gateCartAdd } from '@/utils/authGate';
 import { formatINR } from '@/utils/format';
@@ -93,6 +94,20 @@ export default function ExperienceDetailScreen() {
   // Header + browser Back → home (not the previous browse page).
   useExitToHomeOnBack(true);
 
+  if (!COMBOS_ENABLED) {
+    return (
+      <Screen showHeader={false}>
+        <ScreenHeader title="Combo" onBack={goHome} />
+        <EmptyState
+          title="Combos are paused"
+          subtitle="We’re updating bundles — book kits from Home for now."
+          actionLabel="Go Home"
+          onAction={goHome}
+        />
+      </Screen>
+    );
+  }
+
   if (!experience) {
     return (
       <Screen showHeader={false}>
@@ -100,7 +115,7 @@ export default function ExperienceDetailScreen() {
         <EmptyState
           title="Combo not found"
           subtitle="This bundle may have rotated out."
-          actionLabel="Browse combos"
+          actionLabel="Go Home"
           onAction={goHome}
         />
       </Screen>
