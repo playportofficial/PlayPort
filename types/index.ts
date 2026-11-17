@@ -349,6 +349,9 @@ export interface Order {
   endAt?: string;
   holdExpiresAt?: string | null;
   razorpayOrderId?: string;
+  /** Why the booking was cancelled, when known (hold expiry, customer cancel, etc.). */
+  cancelReason?: string | null;
+  cancelledAt?: string | null;
   /** Paid session extensions — each pushes endAt forward. */
   extensions?: OrderExtension[];
   /** Real refund record when one has been attempted. Null = no refund attempt yet. */

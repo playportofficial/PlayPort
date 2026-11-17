@@ -39,7 +39,8 @@ export default function AdminPaymentsScreen() {
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [onlyUnmatched, setOnlyUnmatched] = useState(false);
+  // Default on: "he says he paid" is the whole reason this screen exists.
+  const [onlyUnmatched, setOnlyUnmatched] = useState(true);
 
   const ordersById = useMemo(() => {
     const map = new Map<string, (typeof orders)[number]>();

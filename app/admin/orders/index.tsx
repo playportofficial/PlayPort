@@ -10,9 +10,10 @@ import type { OrderStatus } from '@/types';
 import { orderStatusLabel } from '@/utils/format';
 import { deliverySlot } from '@/utils/serviceHours';
 
-const FILTERS: { id: 'open' | 'all' | 'scheduled' | OrderStatus; label: string }[] = [
+const FILTERS: { id: 'open' | 'all' | 'scheduled' | 'attention' | OrderStatus; label: string }[] = [
   { id: 'open', label: 'Open' },
   { id: 'scheduled', label: 'Scheduled' },
+  { id: 'attention', label: 'Attention' },
   { id: 'all', label: 'All' },
   { id: 'pending_payment', label: 'Unpaid' },
   { id: 'confirmed', label: 'Confirmed' },
@@ -36,6 +37,16 @@ const OPEN: OrderStatus[] = [
   'returning',
 ];
 
+/** Cancelled / failed checkouts that still look like money may have moved — ops must see them. */
+function needsAttention(order: { status: string; paymentStatus?: string | null; razorpayOrderId?: string | null; cancelReason?: string | null }) {
+  if (order.status === 'cancelled' || order.status === 'refunded') {
+    if (order.paymentStatus === 'paid') return true;
+    if (order.razorpayOrderId && (order.paymentStatus === 'failed' || order.paymentStatus === 'pending')) return true;
+    if (order.cancelReason === 'Payment hold expired') return true;
+  }
+  return false;
+}
+
 export default function AdminOrdersScreen() {
   const { horizontalPadding } = useResponsive();
   const orders = useAdminStore((s) => s.orders);
@@ -53,6 +64,8 @@ export default function AdminOrdersScreen() {
     });
   };
 
+  const attentionCount = useMemo(() => orders.filter(needsAttention).length, [orders]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     let list = orders;
@@ -66,6 +79,10 @@ export default function AdminOrdersScreen() {
             OPEN.includes(o.status) && o.startAt && new Date(o.startAt).getTime() > Date.now()
         )
         .sort((a, b) => String(a.startAt).localeCompare(String(b.startAt)));
+    else if (filter === 'attention')
+      list = list
+        .filter(needsAttention)
+        .sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)));
     else if (filter !== 'all') list = list.filter((o) => o.status === filter);
     if (!q) return list;
     const digits = q.replace(/\D/g, '');
@@ -100,6 +117,7 @@ export default function AdminOrdersScreen() {
           <Text style={adminStyles.title}>Deliveries</Text>
           <Text style={adminStyles.subtitle}>
             {filtered.length} orders{query.trim() ? ` matching “${query.trim()}”` : ''}
+            {attentionCount ? ` · ${attentionCount} need attention` : ''}
           </Text>
         </View>
         <Pressable style={adminStyles.chip} onPress={refresh}>
@@ -115,6 +133,22 @@ export default function AdminOrdersScreen() {
         autoCapitalize="none"
         style={styles.search}
       />
+
+      {attentionCount > 0 && filter !== 'attention' ? (
+        <Pressable
+          style={styles.attentionBanner}
+          onPress={() => setFilter('attention')}
+          accessibilityRole="button"
+        >
+          <Text style={styles.attentionTitle}>
+            {attentionCount} checkout{attentionCount === 1 ? '' : 's'} may have paid money
+          </Text>
+          <Text style={styles.attentionBody}>
+            Hold-expired or cancelled bookings with a Razorpay attempt. Open Attention (or Payments) before
+            telling the customer there is no order.
+          </Text>
+        </Pressable>
+      ) : null}
 
       {error ? (
         <Text style={styles.error}>
@@ -132,6 +166,7 @@ export default function AdminOrdersScreen() {
           >
             <Text style={[adminStyles.chipText, filter === f.id && adminStyles.chipTextActive]}>
               {f.label}
+              {f.id === 'attention' && attentionCount ? ` · ${attentionCount}` : ''}
             </Text>
           </Pressable>
         ))}
@@ -144,10 +179,11 @@ export default function AdminOrdersScreen() {
       ) : (
         filtered.map((o) => {
           const slot = deliverySlot(o);
+          const flag = needsAttention(o);
           return (
             <Pressable
               key={o.id}
-              style={adminStyles.card}
+              style={[adminStyles.card, flag && styles.attentionCard]}
               onPress={() => router.push(`/admin/orders/${o.id}` as never)}
             >
               <View style={adminStyles.row}>
@@ -155,8 +191,12 @@ export default function AdminOrdersScreen() {
                 <StatusBadge status={o.status} label={orderStatusLabel(o.status)} />
               </View>
               <Text style={adminStyles.cardMeta}>
-                {o.addressLabel} · ₹{o.total} · {o.paymentStatus ?? '—'} · hub {o.hubId ?? '—'}
+                {[o.customerName, o.customerPhone].filter(Boolean).join(' · ') || 'No contact'}
+                {o.addressLabel ? ` · ${o.addressLabel}` : ''} · ₹{o.total} · {o.paymentStatus ?? '—'}
               </Text>
+              {flag && o.cancelReason ? (
+                <Text style={styles.attentionBody}>{o.cancelReason}</Text>
+              ) : null}
               {slot ? <Text style={adminStyles.cardMeta}>Slot {slot.window}</Text> : null}
               <Text style={adminStyles.cardMeta}>
                 {o.items?.map((i) => i.name).join(', ')}
@@ -200,5 +240,26 @@ const styles = {
     fontSize: 13,
     lineHeight: 18,
     marginBottom: spacing.sm,
+  },
+  attentionBanner: {
+    backgroundColor: colors.surfaceRaised,
+    borderWidth: 1,
+    borderColor: colors.playportOrange,
+    borderRadius: 12,
+    padding: spacing.md,
+    gap: 4,
+    marginBottom: spacing.sm,
+  },
+  attentionCard: { borderColor: colors.playportOrange },
+  attentionTitle: {
+    color: colors.playportOrange,
+    fontFamily: fonts.heading,
+    fontSize: 14,
+  },
+  attentionBody: {
+    color: colors.secondaryText,
+    fontFamily: fonts.body,
+    fontSize: 12,
+    lineHeight: 17,
   },
 } as const;

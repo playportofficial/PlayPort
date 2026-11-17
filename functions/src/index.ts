@@ -31,8 +31,12 @@ const db = getFirestore();
 const REGION = 'asia-south1';
 /** Must match constants/legal.ts LEGAL_VERSION — bump both when the policies change. */
 const LEGAL_VERSION = '2026-10-26';
-/** Payment hold TTL before inventory is released automatically. */
-const HOLD_TTL_MS = 15 * 60 * 1000;
+/**
+ * Payment hold TTL before inventory is released automatically.
+ * Long enough for slow UPI / netbanking so a captured Razorpay payment is not
+ * orphaned by the hold sweeper while the customer is still on the bank page.
+ */
+const HOLD_TTL_MS = 30 * 60 * 1000;
 
 const ORDER_TRANSITIONS: Record<string, string[]> = {
   pending_payment: ['cancelled'],
@@ -101,6 +105,38 @@ function validRazorpaySignature(razorpayOrderId: string, paymentId: string, sign
   const a = Buffer.from(expected);
   const b = Buffer.from(String(signature));
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function razorpayClient(): { orders: { fetch: (id: string) => Promise<{ status?: string; amount_paid?: number }> }; payments: { fetch: (id: string) => Promise<{ id: string; status?: string; order_id?: string; amount?: number }> } } | null {
+  const keyId = razorpayKeyId.value();
+  const keySecret = razorpayKeySecret.value();
+  if (!keyId || !keySecret) return null;
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const Razorpay = require('razorpay');
+  return new Razorpay({ key_id: keyId, key_secret: keySecret });
+}
+
+/**
+ * Look up whether Razorpay already captured money for one of our checkout orders.
+ * Returns the payment id when paid; null when still open / failed / unknown.
+ */
+async function razorpayCapturedPaymentId(razorpayOrderId: string | null | undefined): Promise<string | null> {
+  if (!razorpayOrderId || razorpayOrderId.startsWith('demo_')) return null;
+  const rzp = razorpayClient();
+  if (!rzp) return null;
+  try {
+    const order = await rzp.orders.fetch(razorpayOrderId);
+    if (order?.status === 'paid' && Number(order.amount_paid) > 0) {
+      // Prefer a real payment id when the payments collection already has one.
+      const paySnap = await db.collection('payments').doc(razorpayOrderId).get();
+      const existing = paySnap.data()?.providerRef;
+      if (typeof existing === 'string' && existing.startsWith('pay_')) return existing;
+      return razorpayOrderId;
+    }
+  } catch (err) {
+    logger.warn('Razorpay order fetch failed', { razorpayOrderId, error: String(err) });
+  }
+  return null;
 }
 
 function requireAuth(uid: string | undefined): string {
@@ -1360,17 +1396,17 @@ export const confirmPayment = onCall({ region: REGION }, async (request) => {
     return { ok: true, paymentStatus: 'paid' as const };
   }
 
-  const holdExp = order.holdExpiresAt ? new Date(order.holdExpiresAt).getTime() : 0;
-  if (holdExp && holdExp < Date.now() && order.paymentStatus === 'pending') {
-    await markOrderPaymentFailedOrCancelled(ref, order, 'Hold expired');
-    throw new HttpsError('deadline-exceeded', 'Payment hold expired — start checkout again');
-  }
-
   const nowIso = new Date().toISOString();
   let paymentId: string;
   if (gatewayLive) {
     // With Razorpay configured, only Razorpay's signed proof can mark an order paid.
+    // Verify proof FIRST — never cancel a hold after the customer already paid.
     if (provider !== 'razorpay' || !payment?.razorpayOrderId || !payment.paymentId || !payment.signature) {
+      const holdExp = order.holdExpiresAt ? new Date(order.holdExpiresAt).getTime() : 0;
+      if (holdExp && holdExp < Date.now() && order.paymentStatus === 'pending') {
+        await markOrderPaymentFailedOrCancelled(ref, order, 'Hold expired');
+        throw new HttpsError('deadline-exceeded', 'Payment hold expired — start checkout again');
+      }
       throw new HttpsError('invalid-argument', 'Payment proof required');
     }
     if (!order.razorpayOrderId || payment.razorpayOrderId !== order.razorpayOrderId) {
@@ -1387,6 +1423,11 @@ export const confirmPayment = onCall({ region: REGION }, async (request) => {
     paymentId = payment.paymentId;
     await payRef.update({ status: 'paid', providerRef: paymentId, updatedAt: nowIso });
   } else {
+    const holdExp = order.holdExpiresAt ? new Date(order.holdExpiresAt).getTime() : 0;
+    if (holdExp && holdExp < Date.now() && order.paymentStatus === 'pending') {
+      await markOrderPaymentFailedOrCancelled(ref, order, 'Hold expired');
+      throw new HttpsError('deadline-exceeded', 'Payment hold expired — start checkout again');
+    }
     // No gateway keys (local/dev builds only): demo checkout.
     paymentId = `demo_${randomBytes(6).toString('hex')}`;
     await db.collection('payments').doc(paymentId).set({
@@ -2171,12 +2212,27 @@ async function releaseExpiredHoldsInternal() {
     });
   }
 
+  let recovered = 0;
+  let cancelled = 0;
   for (const oid of orderIds) {
     const orderRef = db.collection('orders').doc(oid);
     const orderSnap = await orderRef.get();
     if (!orderSnap.exists) continue;
     const order = orderSnap.data()!;
+    if (order.paymentStatus === 'paid') continue;
     if (order.paymentStatus !== 'pending') continue;
+
+    // Money may already be in Razorpay while our hold timer ran out. Never cancel
+    // a booking that the gateway already captured — resurrect it instead.
+    const capturedId = await razorpayCapturedPaymentId(
+      typeof order.razorpayOrderId === 'string' ? order.razorpayOrderId : null
+    );
+    if (capturedId) {
+      await confirmPaidOrderAdmin(oid, capturedId);
+      recovered += 1;
+      continue;
+    }
+
     await orderRef.update({
       status: 'cancelled',
       paymentStatus: 'failed',
@@ -2186,6 +2242,7 @@ async function releaseExpiredHoldsInternal() {
       cancelledAt: nowIso,
       updatedAt: nowIso,
     });
+    cancelled += 1;
     if (order.userId) {
       await pushNotification(order.userId, {
         title: 'Hold expired',
@@ -2194,9 +2251,44 @@ async function releaseExpiredHoldsInternal() {
         orderId: oid,
       });
     }
+    await notifyOps({
+      kind: 'flag',
+      severity: 'info',
+      title: `Checkout abandoned: ${oid}`,
+      body: `${oid} · ₹${Math.round(Number(order.total) || 0)} · hold expired without a Razorpay capture · ${runSummary(order)}`,
+      orderId: oid,
+    });
   }
 
-  return { releasedReservations: snap.size, ordersTouched: orderIds.size };
+  return { releasedReservations: snap.size, ordersTouched: orderIds.size, recovered, cancelled };
+}
+
+/**
+ * Catch payments Razorpay captured after we cancelled the hold (or when the
+ * webhook never arrived). Runs on the same 5-minute schedule as hold release.
+ */
+async function reconcilePendingRazorpayPaymentsInternal() {
+  const snap = await db
+    .collection('payments')
+    .where('provider', '==', 'razorpay')
+    .where('status', '==', 'pending')
+    .limit(50)
+    .get();
+
+  let checked = 0;
+  let recovered = 0;
+  for (const doc of snap.docs) {
+    checked += 1;
+    const pay = doc.data();
+    const orderId = typeof pay.orderId === 'string' ? pay.orderId : null;
+    if (!orderId) continue;
+    const capturedId = await razorpayCapturedPaymentId(doc.id);
+    if (!capturedId) continue;
+    await confirmPaidOrderAdmin(orderId, capturedId.startsWith('pay_') ? capturedId : doc.id);
+    recovered += 1;
+  }
+  if (checked) logger.info('Razorpay pending reconcile', { checked, recovered });
+  return { checked, recovered };
 }
 
 export const releaseExpiredInventoryHold = onCall({ region: REGION }, async (request) => {
@@ -2218,6 +2310,7 @@ export const releaseExpiredInventoryHoldSchedule = onSchedule(
       ['contact backfill', backfillOrderContactsInternal],
       ['past-slot expiry', expirePastSlotOrdersInternal],
       ['pre-slot recheck', recheckPrepaidSlotsInternal],
+      ['razorpay reconcile', reconcilePendingRazorpayPaymentsInternal],
     ] as const) {
       try {
         await task();
@@ -2888,39 +2981,95 @@ export const createRazorpayOrder = onCall(
   }
 );
 
+/**
+ * Mark an order paid from webhook / hold-recovery. Works even when the hold
+ * sweeper already cancelled the booking — money in the bank must resurrect it.
+ */
 async function confirmPaidOrderAdmin(orderId: string, providerRef: string) {
   const ref = db.collection('orders').doc(orderId);
   const snap = await ref.get();
   if (!snap.exists) return;
   const order = snap.data()!;
-  if (order.paymentStatus === 'paid') return;
+  if (order.paymentStatus === 'paid' && order.status !== 'cancelled' && order.status !== 'refunded') {
+    return;
+  }
 
   const nowIso = new Date().toISOString();
   const reservationIds: string[] = order.reservationIds ?? [];
   await Promise.all(
-    reservationIds.map((rid) =>
-      db.collection('inventory_reservations').doc(rid).update({
+    reservationIds.map(async (rid) => {
+      const rRef = db.collection('inventory_reservations').doc(rid);
+      const rSnap = await rRef.get();
+      if (!rSnap.exists) return;
+      await rRef.update({
         status: 'confirmed',
         holdExpiresAt: null,
         updatedAt: nowIso,
-      })
-    )
+      });
+    })
   );
+
+  const wasCancelled = order.status === 'cancelled' || order.paymentStatus === 'failed';
   await ref.update({
     paymentStatus: 'paid',
     status: 'confirmed',
     holdExpiresAt: null,
     progressPercent: 20,
     updatedAt: nowIso,
+    paymentProvider: 'razorpay',
+    paymentMethodLabel: 'Razorpay',
+    ...(providerRef.startsWith('pay_') ? { razorpayPaymentId: providerRef } : {}),
+    ...(wasCancelled
+      ? {
+          cancelReason: FieldValue.delete(),
+          cancelledAt: FieldValue.delete(),
+          recoveredAt: nowIso,
+          recoverNote: 'Resurrected after Razorpay capture was confirmed',
+        }
+      : {}),
   });
-  if (order.userId) await clearUserCart(order.userId);
-  await pushNotification(order.userId, {
-    title: 'Payment received',
-    body: `${orderId} is confirmed and being packed.`,
-    type: 'payment',
+
+  const razorpayOrderId = typeof order.razorpayOrderId === 'string' ? order.razorpayOrderId : null;
+  if (razorpayOrderId) {
+    await db
+      .collection('payments')
+      .doc(razorpayOrderId)
+      .set(
+        {
+          status: 'paid',
+          providerRef: providerRef || razorpayOrderId,
+          updatedAt: nowIso,
+        },
+        { merge: true }
+      );
+  }
+
+  if (order.userId) {
+    await clearUserCart(order.userId);
+    await pushNotification(order.userId, {
+      title: 'Payment received',
+      body: `${orderId} is confirmed and being packed.`,
+      type: 'payment',
+      orderId,
+    });
+  }
+
+  await notifyHubRiders(order.hubId, {
+    title: 'New run available',
+    body: `${orderId} · ${runSummary(order)} · paid`,
+    type: 'delivery',
     orderId,
   });
-  void providerRef;
+
+  await notifyOps({
+    kind: 'payment_received',
+    severity: wasCancelled ? 'critical' : 'warning',
+    title: wasCancelled ? `Recovered paid booking: ${orderId}` : `Paid booking: ${orderId}`,
+    body: `${orderId} · ₹${Math.round(Number(order.total) || 0)} · ${runSummary(order)} · starts ${formatInIndia(new Date(order.startAt))}${
+      wasCancelled ? ' · was cancelled after hold expiry — check stock' : ''
+    }`,
+    orderId,
+  });
 }
 
 export const razorpayWebhook = onRequest(
