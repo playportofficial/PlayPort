@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, Text, TextInput, View } from 'react-native';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { adminStyles } from '@/components/admin/adminStyles';
 import { StatusBadge } from '@/components/ui/StatusBadge';
 import { colors, fonts, spacing } from '@/constants/theme';
@@ -8,7 +8,7 @@ import { useResponsive } from '@/hooks/useResponsive';
 import { useAdminStore } from '@/store/adminStore';
 import type { OrderStatus } from '@/types';
 import { orderStatusLabel } from '@/utils/format';
-import { deliverySlot } from '@/utils/serviceHours';
+import { deliverySlot, formatSlot } from '@/utils/serviceHours';
 
 const FILTERS: { id: 'open' | 'all' | 'scheduled' | 'attention' | OrderStatus; label: string }[] = [
   { id: 'open', label: 'Open' },
@@ -51,9 +51,18 @@ export default function AdminOrdersScreen() {
   const { horizontalPadding } = useResponsive();
   const orders = useAdminStore((s) => s.orders);
   const loadOrders = useAdminStore((s) => s.loadOrders);
-  const [filter, setFilter] = useState<(typeof FILTERS)[number]['id']>('open');
+  const params = useLocalSearchParams<{ filter?: string }>();
+  const initial =
+    FILTERS.some((f) => f.id === params.filter) ? (params.filter as (typeof FILTERS)[number]['id']) : 'open';
+  const [filter, setFilter] = useState<(typeof FILTERS)[number]['id']>(initial);
   const [query, setQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (FILTERS.some((f) => f.id === params.filter)) {
+      setFilter(params.filter as (typeof FILTERS)[number]['id']);
+    }
+  }, [params.filter]);
 
   const refresh = () => {
     setError(null);
@@ -65,6 +74,17 @@ export default function AdminOrdersScreen() {
   };
 
   const attentionCount = useMemo(() => orders.filter(needsAttention).length, [orders]);
+  const scheduledCount = useMemo(
+    () =>
+      orders.filter(
+        (o) =>
+          OPEN.includes(o.status) &&
+          (o.paymentStatus === 'paid' || o.paymentStatus === 'cod' || o.status === 'pending_payment') &&
+          o.startAt &&
+          new Date(o.startAt).getTime() > Date.now()
+      ).length,
+    [orders]
+  );
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -134,6 +154,22 @@ export default function AdminOrdersScreen() {
         style={styles.search}
       />
 
+      {scheduledCount > 0 && filter !== 'scheduled' ? (
+        <Pressable
+          style={styles.scheduledBanner}
+          onPress={() => setFilter('scheduled')}
+          accessibilityRole="button"
+        >
+          <Text style={styles.scheduledTitle}>
+            {scheduledCount} pre-booked order{scheduledCount === 1 ? '' : 's'} ahead
+          </Text>
+          <Text style={styles.attentionBody}>
+            Paid (or unpaid hold) for a future slot — not in today’s Available rides yet. Tap Scheduled
+            for who, when and where.
+          </Text>
+        </Pressable>
+      ) : null}
+
       {attentionCount > 0 && filter !== 'attention' ? (
         <Pressable
           style={styles.attentionBanner}
@@ -197,7 +233,14 @@ export default function AdminOrdersScreen() {
               {flag && o.cancelReason ? (
                 <Text style={styles.attentionBody}>{o.cancelReason}</Text>
               ) : null}
-              {slot ? <Text style={adminStyles.cardMeta}>Slot {slot.window}</Text> : null}
+              {o.startAt ? (
+                <Text style={styles.slotLine}>
+                  {formatSlot(o.startAt)}
+                  {slot?.hours ? ` · ${slot.hours}h` : ''}
+                </Text>
+              ) : slot ? (
+                <Text style={adminStyles.cardMeta}>Slot {slot.window}</Text>
+              ) : null}
               <Text style={adminStyles.cardMeta}>
                 {o.items?.map((i) => i.name).join(', ')}
               </Text>
@@ -250,6 +293,20 @@ const styles = {
     gap: 4,
     marginBottom: spacing.sm,
   },
+  scheduledBanner: {
+    backgroundColor: colors.surfaceRaised,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 12,
+    padding: spacing.md,
+    gap: 4,
+    marginBottom: spacing.sm,
+  },
+  scheduledTitle: {
+    color: colors.primaryText,
+    fontFamily: fonts.heading,
+    fontSize: 14,
+  },
   attentionCard: { borderColor: colors.playportOrange },
   attentionTitle: {
     color: colors.playportOrange,
@@ -261,5 +318,10 @@ const styles = {
     fontFamily: fonts.body,
     fontSize: 12,
     lineHeight: 17,
+  },
+  slotLine: {
+    color: colors.playportOrange,
+    fontFamily: fonts.bodyMedium,
+    fontSize: 13,
   },
 } as const;

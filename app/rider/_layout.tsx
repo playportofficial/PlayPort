@@ -19,6 +19,11 @@ import { useRiderLocationTracking } from '@/hooks/useRiderLocationTracking';
 
 const NAV = [
   { href: '/rider', label: 'Available', match: (p: string) => p === '/rider' || p === '/rider/' },
+  {
+    href: '/rider/scheduled',
+    label: 'Pre-booked',
+    match: (p: string) => p.startsWith('/rider/scheduled'),
+  },
   { href: '/rider/mine', label: 'My runs', match: (p: string) => p.startsWith('/rider/mine') },
   {
     href: '/rider/notifications',
@@ -36,6 +41,7 @@ export default function RiderLayout() {
   const bootstrap = useRiderStore((s) => s.bootstrap);
   const rider = useRiderStore((s) => s.rider);
   const mine = useRiderStore((s) => s.mine);
+  const upcoming = useRiderStore((s) => s.upcoming);
   // New-run, assignment and cancellation alerts share the customer inbox for this
   // auth uid, so the badge is just the unread count on it.
   const unreadAlerts = useAppStore((s) => s.notifications.filter((n) => !n.read).length);
@@ -152,6 +158,7 @@ export default function RiderLayout() {
                 >
                   <Text style={[styles.navLabel, active && styles.navLabelActive]}>
                     {item.label}
+                    {item.label === 'Pre-booked' && upcoming.length ? ` · ${upcoming.length}` : ''}
                     {item.label === 'Alerts' && unreadAlerts ? ` · ${unreadAlerts}` : ''}
                   </Text>
                 </Pressable>
@@ -173,6 +180,7 @@ export default function RiderLayout() {
           <View style={styles.contentInner}>
             <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.page } }}>
               <Stack.Screen name="index" />
+              <Stack.Screen name="scheduled" />
               <Stack.Screen name="mine" />
               <Stack.Screen name="notifications" />
               <Stack.Screen name="order/[id]" />

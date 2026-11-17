@@ -70,7 +70,15 @@ export default function AdminOverviewScreen() {
 
   const showPermissionBanner = typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default';
 
-  const cards = [
+  const orders = useAdminStore((s) => s.orders);
+  const prebooked = orders.filter(
+    (o) =>
+      ['pending_payment', 'confirmed', 'preparing'].includes(o.status) &&
+      o.startAt &&
+      new Date(o.startAt).getTime() > Date.now()
+  ).length;
+
+  const cards: { label: string; value: string | number; href: string; params?: Record<string, string> }[] = [
     { label: 'Products', value: counts?.products ?? '—', href: '/admin/products' },
     { label: 'Combos', value: counts?.experiences ?? '—', href: '/admin/combos' },
     { label: 'Categories', value: counts?.categories ?? '—', href: '/admin/categories' },
@@ -80,6 +88,12 @@ export default function AdminOverviewScreen() {
       href: '/admin/inventory',
     },
     { label: 'Open deliveries', value: counts?.openOrders ?? '—', href: '/admin/orders' },
+    {
+      label: 'Pre-booked',
+      value: prebooked || '0',
+      href: '/admin/orders',
+      params: { filter: 'scheduled' },
+    },
     { label: 'Payments', value: 'Ledger', href: '/admin/payments' },
     { label: 'Hubs', value: counts?.hubs ?? '—', href: '/admin/hubs' },
     { label: 'Reviews', value: counts?.reviews ?? '—', href: '/admin/reviews' },
@@ -160,7 +174,15 @@ export default function AdminOverviewScreen() {
       ) : (
         <View style={styles.grid}>
           {cards.map((c) => (
-            <Pressable key={c.label} style={styles.statCard} onPress={() => router.push(c.href as never)}>
+            <Pressable
+              key={c.label}
+              style={styles.statCard}
+              onPress={() =>
+                router.push(
+                  (c.params ? { pathname: c.href, params: c.params } : c.href) as never
+                )
+              }
+            >
               <Text style={styles.statValue}>{c.value}</Text>
               <Text style={styles.statLabel}>{c.label}</Text>
             </Pressable>
