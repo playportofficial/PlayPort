@@ -182,7 +182,10 @@ export interface Experience {
   howItWorks: string[];
   /** Hour packages customers pick on the combo. One combo, many lengths. */
   plans?: RentalPlan[];
-  /** Optional extra-controller pricing for this combo. Absent/empty = no extra controllers. */
+  /**
+   * Optional extra-controller pricing for this combo. When absent/empty, the app
+   * derives controller add-ons from the included consoles (see experienceAddonOptions).
+   */
   addons?: ProductAddon[];
 }
 

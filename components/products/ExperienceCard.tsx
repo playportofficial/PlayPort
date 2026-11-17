@@ -71,7 +71,11 @@ export function ExperienceCard({ experience, onPress, onBook }: Props) {
         <Text style={styles.price}>
           {formatINR(plan.price)} <Text style={styles.duration}>{plan.label}</Text>
         </Text>
-        <Button title="Quick Book" size="sm" onPress={() => (onBook ? onBook(plan.id) : onPress?.())} />
+        <Button
+          title="Book with extras"
+          size="sm"
+          onPress={() => (onBook ? onBook(plan.id) : onPress?.())}
+        />
       </View>
     </View>
   );

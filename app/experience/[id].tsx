@@ -175,31 +175,12 @@ export default function ExperienceDetailScreen() {
           </View>
         </View>
 
-        <SchedulePicker maxHours={plan?.hours ?? 12} notBefore={notBefore} />
-
-        {comboCheckItems.length ? (
-          <AvailabilityBlock
-            items={comboCheckItems}
-            hubId={hub?.id}
-            notBefore={notBefore}
-            startIso={
-              scheduledValid && isValidScheduledStart(scheduledStartAt, new Date(), plan?.hours ?? 12, notBefore)
-                ? (scheduledStartAt as string)
-                : null
-            }
-            onApplySlot={(iso) => {
-              setScheduledStartAt(iso);
-              showToast('Slot set — book the combo to lock it in');
-            }}
-          />
-        ) : null}
-
         {controllerAddons.length > 0 ? (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Extra controllers</Text>
             <Text style={styles.addonDesc}>
               {controllerAddons.length === 1
-                ? `This combo: ${describeControllerPrice(controllerAddons[0])}`
+                ? `Add a second DualSense — ${describeControllerPrice(controllerAddons[0])}`
                 : 'Each extra below uses this combo’s own price.'}
             </Text>
             {controllerAddons.map((addon) => (
@@ -223,6 +204,25 @@ export default function ExperienceDetailScreen() {
               />
             ))}
           </View>
+        ) : null}
+
+        <SchedulePicker maxHours={plan?.hours ?? 12} notBefore={notBefore} />
+
+        {comboCheckItems.length ? (
+          <AvailabilityBlock
+            items={comboCheckItems}
+            hubId={hub?.id}
+            notBefore={notBefore}
+            startIso={
+              scheduledValid && isValidScheduledStart(scheduledStartAt, new Date(), plan?.hours ?? 12, notBefore)
+                ? (scheduledStartAt as string)
+                : null
+            }
+            onApplySlot={(iso) => {
+              setScheduledStartAt(iso);
+              showToast('Slot set — book the combo to lock it in');
+            }}
+          />
         ) : null}
 
         <View style={styles.section}>

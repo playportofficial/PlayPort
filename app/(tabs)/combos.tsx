@@ -7,25 +7,14 @@ import { ExperienceCard } from '@/components/products/ExperienceCard';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { colors, spacing } from '@/constants/theme';
 import { useResponsive } from '@/hooks/useResponsive';
-import { useAppStore } from '@/store/appStore';
 import { useCatalogStore } from '@/store/catalogStore';
-import { useFeelStore } from '@/store/feelStore';
-import { gateCartAdd } from '@/utils/authGate';
 
 export default function CombosScreen() {
   const { horizontalPadding, experienceColumns, gap } = useResponsive();
   const experiences = useCatalogStore((s) => s.experiences);
   const ready = useCatalogStore((s) => s.ready);
   const hydrate = useCatalogStore((s) => s.hydrate);
-  const addExperienceToCart = useAppStore((s) => s.addExperienceToCart);
-  const showToast = useFeelStore((s) => s.showToast);
   const cols = Math.max(1, experienceColumns);
-
-  const bookCombo = (id: string, name: string, planId: string) => {
-    if (!gateCartAdd('/(tabs)/combos', { kind: 'experience', experienceId: id, planId })) return;
-    addExperienceToCart(id, planId);
-    showToast(`Added ${name}`);
-  };
 
   return (
     <Screen showFloatingCart pageTitle="Combos" showCart={false} showDelivery={false}>
@@ -43,7 +32,9 @@ export default function CombosScreen() {
                 <ExperienceCard
                   experience={experience}
                   onPress={() => router.push(`/experience/${experience.id}`)}
-                  onBook={(planId) => bookCombo(experience.id, experience.name, planId)}
+                  // Open the combo page so Extra Controller can be chosen before cart —
+                  // Quick Book used to skip that and left combos without controller extras.
+                  onBook={() => router.push(`/experience/${experience.id}`)}
                 />
               </EnterUp>
             ))}

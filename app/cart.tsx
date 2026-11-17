@@ -33,8 +33,37 @@ import {
   isServiceOpen,
   isValidScheduledStart,
 } from '@/utils/serviceHours';
-import { addonsTotal, experiencePlans, isControllerAddon, normalizeProduct } from '@/utils/rentalPricing';
-import type { CartItem, Experience, Product, RentalPlan } from '@/types';
+import {
+  addonsTotal,
+  experienceAddonOptions,
+  experiencePlans,
+  isControllerAddon,
+  normalizeProduct,
+} from '@/utils/rentalPricing';
+import type { CartItem, Experience, Product, ProductAddon, RentalPlan } from '@/types';
+
+/** Extra-controller catalog for a cart line — kits use the product, combos use experienceAddonOptions. */
+function controllerAddonForCartItem(
+  item: CartItem,
+  products: Product[],
+  experiences: Experience[]
+): { label: string; addon: ProductAddon } | null {
+  if (item.productId) {
+    const product = products.find((p) => p.id === item.productId);
+    const addon = product
+      ? normalizeProduct(product).addons?.find((a) => isControllerAddon(a))
+      : undefined;
+    if (!product || !addon) return null;
+    return { label: product.shortName || product.name, addon };
+  }
+  if (item.experienceId) {
+    const experience = experiences.find((e) => e.id === item.experienceId);
+    const addon = experienceAddonOptions(experience, products)[0];
+    if (!experience || !addon) return null;
+    return { label: experience.name, addon };
+  }
+  return null;
+}
 
 function plansForCartItem(
   item: CartItem,
@@ -340,45 +369,37 @@ export default function CartScreen() {
           })}
         </View>
 
-        {cart.some((item) => {
-          const product = products.find((p) => p.id === item.productId);
-          return product
-            ? normalizeProduct(product).addons?.some((a) => isControllerAddon(a))
-            : false;
-        }) ? (
-        <View style={styles.section}>
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Extra controllers</Text>
-          <Text style={styles.note}>each kit has its own price</Text>
-        </View>
-        {cart.map((item) => {
-          if (!item.productId) return null;
-          const product = products.find((p) => p.id === item.productId);
-          const addon = product
-            ? normalizeProduct(product).addons?.find((a) => isControllerAddon(a))
-            : undefined;
-          if (!product || !addon) return null;
-          const current = item.addons?.find((a) => a.id === addon.id)?.quantity ?? 0;
-          const setQty = (quantity: number) => {
-            const next = (item.addons ?? [])
-              .filter((a) => a.id !== addon.id)
-              .map((a) => ({ id: a.id, quantity: a.quantity }));
-            if (quantity > 0) next.push({ id: addon.id, quantity });
-            updateCartPlan(item.id, { addons: next });
-          };
-          return (
-            <ControllerAddonRow
-              key={item.id}
-              productName={product.shortName || product.name}
-              addon={addon}
-              hours={item.hours}
-              quantity={current}
-              onIncrement={() => setQty(Math.min(addon.maxQuantity, current + 1))}
-              onDecrement={() => setQty(Math.max(0, current - 1))}
-            />
-          );
-        })}
-      </View>
+        {cart.some((item) => Boolean(controllerAddonForCartItem(item, products, experiences))) ? (
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Extra controllers</Text>
+              <Text style={styles.note}>kits and combos · each has its own price</Text>
+            </View>
+            {cart.map((item) => {
+              const found = controllerAddonForCartItem(item, products, experiences);
+              if (!found) return null;
+              const { label, addon } = found;
+              const current = item.addons?.find((a) => a.id === addon.id)?.quantity ?? 0;
+              const setQty = (quantity: number) => {
+                const next = (item.addons ?? [])
+                  .filter((a) => a.id !== addon.id)
+                  .map((a) => ({ id: a.id, quantity: a.quantity }));
+                if (quantity > 0) next.push({ id: addon.id, quantity });
+                updateCartPlan(item.id, { addons: next });
+              };
+              return (
+                <ControllerAddonRow
+                  key={item.id}
+                  productName={label}
+                  addon={addon}
+                  hours={item.hours}
+                  quantity={current}
+                  onIncrement={() => setQty(Math.min(addon.maxQuantity, current + 1))}
+                  onDecrement={() => setQty(Math.max(0, current - 1))}
+                />
+              );
+            })}
+          </View>
         ) : null}
     </>
   );
