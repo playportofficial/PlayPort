@@ -18,7 +18,11 @@ import { useCatalogStore } from '@/store/catalogStore';
 import { useFeelStore } from '@/store/feelStore';
 import { useWishlistStore } from '@/store/wishlistStore';
 import { gateCartAdd } from '@/utils/authGate';
+import { daySlots, launchStart } from '@/utils/serviceHours';
 import type { CardSelection } from '@/components/products/ProductCard';
+
+/** GTA 6 drop day — first bookable slot that day opens the PS5 page on launch prices. */
+const GTA6_DROP = '2026-11-19';
 
 const CARD_GAP = 16;
 
@@ -31,6 +35,7 @@ export default function HomeScreen() {
   const updateCartQuantity = useAppStore((s) => s.updateCartQuantity);
   const cart = useAppStore((s) => s.cart);
   const scheduledStartAt = useAppStore((s) => s.scheduledStartAt);
+  const setScheduledStartAt = useAppStore((s) => s.setScheduledStartAt);
   const showToast = useFeelStore((s) => s.showToast);
   const products = useCatalogStore((s) => s.products);
   const units = useCatalogStore((s) => s.units);
@@ -92,9 +97,16 @@ export default function HomeScreen() {
     />
   );
 
-  // GTA 6 lands on 19 Nov: the teaser card sits right beside the first kit and, once
-  // ops list the product, borrows its photo and opens its own page.
-  const gta6 = products.find((product) => /gta\s*(6|vi)\b/i.test(`${product.name} ${product.shortName}`));
+  // GTA 6 rides on the normal PS5 (PS5-004 from 19 Nov). The teaser opens that
+  // kit already scheduled for drop day so launch prices and the GTA console show.
+  const gtaListed = products.find((product) => /gta\s*(6|vi)\b/i.test(`${product.name} ${product.shortName}`));
+  const ps5 = products.find((product) => product.id === 'ps5-slim-digital') ?? products.find((p) => p.shortName === 'PS5');
+  const gtaUnit = units.find(
+    (unit) =>
+      unit.productId === (ps5?.id ?? 'ps5-slim-digital') &&
+      /gta\s*(6|vi)\b/i.test((unit.games ?? []).join(' '))
+  );
+  const prebookProduct = gtaListed ?? ps5;
   const tiles: { key: string; node: ReactElement }[] = products.map((product) => ({
     key: product.id,
     node: renderCard(product),
@@ -103,13 +115,18 @@ export default function HomeScreen() {
     key: 'prebook-gta6',
     node: (
       <PrebookPromo
-        product={gta6}
+        product={prebookProduct}
         onPress={() => {
-          if (gta6) {
-            router.push(`/product/${gta6.id}`);
+          if (!prebookProduct) {
+            showToast('GTA 6 pre-books open 19 Nov');
             return;
           }
-          showToast('GTA 6 pre-books open 19 Nov');
+          const drop = launchStart(gtaUnit?.availableFrom || GTA6_DROP) ?? launchStart(GTA6_DROP);
+          if (drop) {
+            const first = daySlots(drop, new Date(), drop)[0];
+            if (first) setScheduledStartAt(first.toISOString());
+          }
+          router.push(`/product/${prebookProduct.id}`);
         }}
       />
     ),

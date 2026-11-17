@@ -15,9 +15,9 @@ interface Props {
 }
 
 /**
- * Pre-book teaser that sits beside the console cards on the home grid. Rentals are
- * data-driven, so this stays a promo: it shows the drop date and, once the GTA 6
- * product exists in the catalog, uses its photo and opens its page.
+ * Pre-book teaser beside the console cards. Opens the PS5 kit already scheduled
+ * for drop day (launch prices + GTA console). Uses the listed product photo when
+ * one is passed.
  */
 export function PrebookPromo({ product, onPress }: Props) {
   const photo = product?.images?.[0];
