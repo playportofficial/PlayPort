@@ -8,6 +8,7 @@ import {
   formatWindow,
   isDispatchable,
   deliverySlot,
+  formatSlotStatus,
   isServiceOpen,
   isValidScheduledStart,
   nextOpenStart,
@@ -232,6 +233,35 @@ describe('deliverySlot (honest rider labels)', () => {
     expect(slot.lateMinutes).toBe(1512); // 25h 12m since the start
     expect(slot.overdueMinutes).toBe(72); // 1h 12m since the window closed
     expect(slot.note).toMatch(/closed 1h 12m ago/);
+    expect(slot.note).not.toMatch(/25h/);
+    expect(formatSlotStatus(slot, { withWindow: true })).toMatch(/closed 1h 12m ago/);
+    expect(formatSlotStatus(slot, { withWindow: true })).not.toMatch(/25h/);
+  });
+  it('infers the end from duration when endAt is missing so it never shows 25h late', () => {
+    const slot = deliverySlot(
+      {
+        startAt: iso('2026-11-11T09:51:00Z'),
+        items: [{ durationLabel: '24 Hours' }],
+      },
+      T('2026-11-12T11:03:00Z')
+    )!;
+    expect(slot.state).toBe('closed');
+    expect(slot.overdueMinutes).toBe(72);
+    expect(slot.note).toMatch(/closed 1h 12m ago/);
+    expect(slot.note).not.toMatch(/25h/);
+  });
+  it('prefers bookedStartAt/bookedEndAt over a slid runtime window', () => {
+    const slot = deliverySlot(
+      {
+        startAt: iso('2026-11-12T11:03:00Z'), // runtime clock slid at handover
+        endAt: iso('2026-11-13T11:03:00Z'),
+        bookedStartAt: iso('2026-11-11T09:51:00Z'),
+        bookedEndAt: iso('2026-11-12T09:51:00Z'),
+      },
+      T('2026-11-12T11:03:00Z')
+    )!;
+    expect(slot.state).toBe('closed');
+    expect(slot.overdueMinutes).toBe(72);
     expect(slot.note).not.toMatch(/25h/);
   });
   it('marks an ops-expired order as closed', () => {

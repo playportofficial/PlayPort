@@ -119,13 +119,13 @@ export default function CartScreen() {
   if (!cart.length) {
     return (
       <Screen showHeader={false}>
-        <ScreenHeader title="My Cart" onBack={() => router.back()} />
+        <ScreenHeader title="My Cart" onBack={() => router.replace('/(tabs)' as never)} />
         <EmptyState
           icon="bag-handle-outline"
           title="Your cart is empty"
           subtitle="Browse kits from your hub."
           actionLabel="Browse kits"
-          onAction={() => router.push('/(tabs)')}
+          onAction={() => router.replace('/(tabs)' as never)}
         />
       </Screen>
     );
@@ -472,7 +472,8 @@ export default function CartScreen() {
           onPress={() => {
             if (orderingPaused) return;
             if (!ensureLoggedIn('/checkout')) return;
-            router.push('/checkout');
+            // Replace so Back from checkout does not re-open cart under payment.
+            router.replace('/checkout' as never);
           }}
           style={styles.payBtn}
         />

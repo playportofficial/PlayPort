@@ -5,7 +5,7 @@ import { colors, fonts, radii, spacing, typeScale } from '@/constants/theme';
 import { useResponsive } from '@/hooks/useResponsive';
 import { useRiderStore } from '@/store/riderStore';
 import { rentalWindow, riderContactLine, riderStatusLabel } from '@/utils/format';
-import { deliverySlot, formatLate } from '@/utils/serviceHours';
+import { deliverySlot, formatSlotStatus } from '@/utils/serviceHours';
 
 export default function RiderMineScreen() {
   const { horizontalPadding } = useResponsive();
@@ -56,10 +56,8 @@ export default function RiderMineScreen() {
                 >
                   {rental.started
                     ? `Rental running${rental.hours ? ` · ${rental.hours}h` : ''}${rental.endLabel ? ` · returns ${rental.endLabel}` : ''}`
-                    : slot?.state === 'closed'
-                      ? `Window closed ${formatLate(slot.overdueMinutes)} ago`
-                      : slot?.state === 'late'
-                        ? `Delivery slot ${slot.startLabel} · ${formatLate(slot.lateMinutes)} late`
+                    : slot
+                      ? formatSlotStatus(slot)
                       : `Booked ${rental.range}${rental.hours ? ` · ${rental.hours}h` : ''} · timer starts at handover`}
                 </Text>
               ) : null}

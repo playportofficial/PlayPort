@@ -21,9 +21,11 @@ import { useResponsive } from '@/hooks/useResponsive';
 import { useAppStore } from '@/store/appStore';
 import { useCatalogStore } from '@/store/catalogStore';
 import { useFeelStore } from '@/store/feelStore';
+import { useExitToHomeOnBack } from '@/hooks/useExitToHomeOnBack';
 import { gateCartAdd } from '@/utils/authGate';
 import { formatINR } from '@/utils/format';
 import { experienceImage } from '@/utils/images';
+import { goHome } from '@/utils/navigation';
 import { isValidScheduledStart } from '@/utils/serviceHours';
 import { expandCheckItems } from '@/lib/availability';
 import {
@@ -88,15 +90,18 @@ export default function ExperienceDetailScreen() {
   const extras = addonsTotal(addonLines);
   const bundleTotal = (plan?.price ?? experience?.price ?? 0) + extras;
 
+  // Header + browser Back → home (not the previous browse page).
+  useExitToHomeOnBack(true);
+
   if (!experience) {
     return (
       <Screen showHeader={false}>
-        <ScreenHeader title="Combo" onBack={() => router.replace('/(tabs)/combos' as never)} />
+        <ScreenHeader title="Combo" onBack={goHome} />
         <EmptyState
           title="Combo not found"
           subtitle="This bundle may have rotated out."
           actionLabel="Browse combos"
-          onAction={() => router.replace('/(tabs)/combos' as never)}
+          onAction={goHome}
         />
       </Screen>
     );
@@ -141,7 +146,7 @@ export default function ExperienceDetailScreen() {
 
   return (
     <Screen showHeader={false} edges={['top']} showFloatingCart>
-      <ScreenHeader title="Combo" onBack={() => router.replace('/(tabs)/combos' as never)} />
+      <ScreenHeader title="Combo" onBack={goHome} />
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={[

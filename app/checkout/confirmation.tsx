@@ -7,11 +7,13 @@ import { ScreenHeader } from '@/components/layout/ScreenHeader';
 import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { colors, fonts, radii, shadows, spacing, typeScale } from '@/constants/theme';
+import { useExitToHomeOnBack } from '@/hooks/useExitToHomeOnBack';
 import { useResponsive } from '@/hooks/useResponsive';
 import { useAppStore } from '@/store/appStore';
 import { useNow } from '@/hooks/useNow';
 import { formatINR, formatReturnLabel } from '@/utils/format';
 import { isEnRoute, locationAgeLabel, remainingEtaMinutes } from '@/utils/liveEta';
+import { goHome } from '@/utils/navigation';
 
 const STEPS = [
   { id: 'confirmed', label: 'Confirmed' },
@@ -65,15 +67,18 @@ export default function ConfirmationScreen() {
   const enRoute = isEnRoute(order?.status);
   const now = useNow(enRoute);
 
+  // Browser Back must exit the paid flow — never revive payment / continue-pay.
+  useExitToHomeOnBack(true);
+
   if (!order) {
     return (
       <Screen showHeader={false} narrow>
-        <ScreenHeader title="Confirmation" onBack={() => router.replace('/(tabs)')} />
+        <ScreenHeader title="Confirmation" onBack={goHome} />
         <EmptyState
           title="Order not found"
           subtitle="We couldn’t load this confirmation."
           actionLabel="Go Home"
-          onAction={() => router.replace('/(tabs)')}
+          onAction={goHome}
         />
       </Screen>
     );
@@ -91,7 +96,7 @@ export default function ConfirmationScreen() {
 
   return (
     <Screen showHeader={false} edges={['top']} narrow>
-      <ScreenHeader title="Order confirmed" onBack={() => router.replace('/(tabs)')} />
+      <ScreenHeader title="Order confirmed" onBack={goHome} />
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={[styles.scroll, { paddingHorizontal: horizontalPadding }]}
@@ -271,7 +276,7 @@ export default function ConfirmationScreen() {
           title="Continue Exploring"
           fullWidth
           variant="secondary"
-          onPress={() => router.replace('/(tabs)')}
+          onPress={goHome}
         />
 
         <View style={styles.support}>

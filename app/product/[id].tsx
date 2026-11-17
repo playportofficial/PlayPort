@@ -23,8 +23,10 @@ import { useResponsive } from '@/hooks/useResponsive';
 import { useAppStore } from '@/store/appStore';
 import { useCatalogStore } from '@/store/catalogStore';
 import { useFeelStore } from '@/store/feelStore';
+import { useExitToHomeOnBack } from '@/hooks/useExitToHomeOnBack';
 import { gateCartAdd } from '@/utils/authGate';
 import { formatINR } from '@/utils/format';
+import { goHome } from '@/utils/navigation';
 import { isValidScheduledStart } from '@/utils/serviceHours';
 import { firstDisplayableImage } from '@/utils/images';
 import { formatLaunchDay, unitBookableFor, upcomingLaunch } from '@/utils/launch';
@@ -95,6 +97,9 @@ export default function ProductDetailScreen() {
   const [unitId, setUnitId] = useState<string | null>(null);
   const [heroFailed, setHeroFailed] = useState(false);
 
+  // Header + browser Back land on home — not the previous browse page.
+  useExitToHomeOnBack(true);
+
   useEffect(() => {
     if (!product) return;
     const plan = defaultPlan(product);
@@ -122,12 +127,12 @@ export default function ProductDetailScreen() {
   if (!product || !normalized) {
     return (
       <Screen showHeader={false}>
-        <ScreenHeader title="Item Detail" onBack={() => router.replace('/(tabs)' as never)} />
+        <ScreenHeader title="Item Detail" onBack={goHome} />
         <EmptyState
           title="Product not found"
           subtitle="This kit may have moved hubs."
           actionLabel="Explore"
-          onAction={() => router.replace('/(tabs)')}
+          onAction={goHome}
         />
       </Screen>
     );
@@ -247,7 +252,7 @@ export default function ProductDetailScreen() {
 
   return (
     <Screen showHeader={false} edges={['top']}>
-      <ScreenHeader title="Item Detail" onBack={() => router.replace('/(tabs)' as never)} />
+      <ScreenHeader title="Item Detail" onBack={goHome} />
       <ScrollView
         style={styles.scrollView}
         showsVerticalScrollIndicator={false}

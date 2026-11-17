@@ -23,6 +23,8 @@ import { ensureLoggedIn } from '@/utils/authGate';
 import { formatINR } from '@/utils/format';
 import { formatLaunchDay } from '@/utils/launch';
 import { isInServiceArea } from '@/utils/serviceArea';
+import { useExitToHomeOnBack } from '@/hooks/useExitToHomeOnBack';
+import { leaveCheckout } from '@/utils/navigation';
 import { formatSlot, formatWindow, isAsapAvailable, isValidScheduledStart } from '@/utils/serviceHours';
 
 export default function CheckoutScreen() {
@@ -51,12 +53,15 @@ export default function CheckoutScreen() {
     }
   }, [authReady, isAuthenticated]);
 
+  // Browser Back exits checkout entirely (home), not cart/product underneath.
+  useExitToHomeOnBack(true, leaveCheckout);
+
   if (!authReady) return <AuthLoadingScreen />;
 
   if (!isAuthenticated) {
     return (
       <Screen showHeader={false} narrow>
-        <ScreenHeader title="Checkout" onBack={() => router.back()} />
+        <ScreenHeader title="Checkout" onBack={leaveCheckout} />
         <EmptyState
           title="Log in to checkout"
           subtitle="Sign in to confirm address and place your rental."
@@ -70,12 +75,12 @@ export default function CheckoutScreen() {
   if (!cart.length) {
     return (
       <Screen showHeader={false} narrow>
-        <ScreenHeader title="Checkout" onBack={() => router.back()} />
+        <ScreenHeader title="Checkout" onBack={leaveCheckout} />
         <EmptyState
           title="Nothing to checkout"
           subtitle="Add a kit to your cart first."
           actionLabel="Explore"
-          onAction={() => router.replace('/(tabs)')}
+          onAction={leaveCheckout}
         />
       </Screen>
     );
@@ -88,7 +93,7 @@ export default function CheckoutScreen() {
       <ScreenHeader
         title="Checkout"
         subtitle="Step 1 of 2 · Review"
-        onBack={() => router.back()}
+        onBack={leaveCheckout}
         right={
           <View style={styles.stepRight}>
             <View style={styles.stepDot} />
@@ -257,7 +262,8 @@ export default function CheckoutScreen() {
           disabled={!deliverable || !deliveryReady || !timingOk || orderingPaused}
           onPress={() => {
             if (!deliverable || !deliveryReady || !timingOk || orderingPaused) return;
-            router.push('/checkout/payment');
+            // Replace so Back from payment does not re-open an empty review step.
+            router.replace('/checkout/payment' as never);
           }}
           style={styles.cta}
         />

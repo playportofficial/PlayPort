@@ -6,7 +6,7 @@ import { colors, fonts, radii, spacing, typeScale } from '@/constants/theme';
 import { useResponsive } from '@/hooks/useResponsive';
 import { useRiderStore } from '@/store/riderStore';
 import { riderContactLine, riderStatusLabel } from '@/utils/format';
-import { deliverySlot, formatLate } from '@/utils/serviceHours';
+import { deliverySlot, formatSlotStatus } from '@/utils/serviceHours';
 
 export default function RiderAvailableScreen() {
   const { horizontalPadding } = useResponsive();
@@ -69,11 +69,7 @@ export default function RiderAvailableScreen() {
               ) : null}
               {slot ? (
                 <Text style={[styles.meta, slot.state !== 'upcoming' && styles.metaWarn]}>
-                  {slot.state === 'upcoming'
-                    ? `Delivery slot ${slot.window}${slot.hours ? ` · ${slot.hours}h` : ''} · clock starts at handover`
-                    : slot.state === 'closed'
-                      ? `Window closed ${formatLate(slot.overdueMinutes)} ago · ${slot.window}`
-                      : `Delivery slot ${slot.startLabel} · ${formatLate(slot.lateMinutes)} late · clock starts at handover`}
+                  {formatSlotStatus(slot, { withWindow: slot.state === 'closed' || slot.overdueMinutes > 0 })}
                 </Text>
               ) : null}
               <Text style={styles.meta}>

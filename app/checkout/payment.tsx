@@ -19,6 +19,8 @@ import { useResponsive } from '@/hooks/useResponsive';
 import { useAppStore, useCartTotals } from '@/store/appStore';
 import { ensureLoggedIn } from '@/utils/authGate';
 import { formatINR } from '@/utils/format';
+import { useExitToHomeOnBack } from '@/hooks/useExitToHomeOnBack';
+import { leaveCheckout } from '@/utils/navigation';
 import { useOrderNotBefore } from '@/hooks/useOrderNotBefore';
 import { formatSlot, isAsapAvailable } from '@/utils/serviceHours';
 import type { PaymentMethodType } from '@/types';
@@ -44,6 +46,8 @@ export default function PaymentScreen() {
   const paymentError = useAppStore((s) => s.paymentError);
   const clearPaymentError = useAppStore((s) => s.clearPaymentError);
   const pendingOrderId = useAppStore((s) => s.pendingOrderId);
+  const lastOrderId = useAppStore((s) => s.lastOrderId);
+  const orders = useAppStore((s) => s.orders);
   const totals = useCartTotals();
   const delivery = useDeliveryQuote();
   const [paying, setPaying] = useState(false);
@@ -72,6 +76,23 @@ export default function PaymentScreen() {
     }
   }, [authReady, isAuthenticated]);
 
+  // Browser Back cancels payment flow → home (never cart → continue payment).
+  useExitToHomeOnBack(true, leaveCheckout);
+
+  // Already paid — never show Pay again via browser Back into this screen.
+  useEffect(() => {
+    if (!authReady || !isAuthenticated) return;
+    const doneId = lastOrderId || pendingOrderId;
+    const done = doneId ? orders.find((o) => o.id === doneId) : undefined;
+    if (
+      done &&
+      (done.paymentStatus === 'paid' || done.paymentStatus === 'cod') &&
+      !['cancelled', 'refunded'].includes(done.status)
+    ) {
+      router.replace({ pathname: '/checkout/confirmation', params: { id: done.id } });
+    }
+  }, [authReady, isAuthenticated, lastOrderId, pendingOrderId, orders]);
+
   const pay = async (fail = false) => {
     if (!ensureLoggedIn('/checkout/payment')) return;
     setPaying(true);
@@ -93,7 +114,7 @@ export default function PaymentScreen() {
   if (!isAuthenticated) {
     return (
       <Screen showHeader={false} narrow>
-        <ScreenHeader title="Payment" onBack={() => router.back()} />
+        <ScreenHeader title="Payment" onBack={leaveCheckout} />
         <EmptyState
           title="Log in to pay"
           subtitle="Sign in to complete your rental payment."
@@ -107,12 +128,12 @@ export default function PaymentScreen() {
   if (!cart.length && !paymentError && !paying && !pendingOrderId) {
     return (
       <Screen showHeader={false} narrow>
-        <ScreenHeader title="Payment" onBack={() => router.back()} />
+        <ScreenHeader title="Payment" onBack={leaveCheckout} />
         <EmptyState
           title="Cart is empty"
           subtitle="Add gear before paying."
           actionLabel="Explore"
-          onAction={() => router.replace('/(tabs)')}
+          onAction={leaveCheckout}
         />
       </Screen>
     );
@@ -136,7 +157,7 @@ export default function PaymentScreen() {
       <ScreenHeader
         title="Checkout"
         subtitle="Step 2 of 2 · Payment"
-        onBack={() => router.back()}
+        onBack={leaveCheckout}
         right={
           <View style={styles.stepRight}>
             <View style={styles.stepDot} />

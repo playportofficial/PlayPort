@@ -309,24 +309,86 @@ export function formatLate(minutes: number): string {
   return m ? `${h}h ${m}m` : `${h}h`;
 }
 
+function parseInstant(value?: string | null): Date | null {
+  if (!value) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** "24 Hours" / "12h" / "6 Hours +1h ext" → whole hours. */
+function hoursFromDurationLabel(label?: string | null): number | null {
+  if (!label) return null;
+  const base = /^(\d+)\s*h(?:ours?)?/i.exec(label.trim());
+  if (base) return Number(base[1]);
+  const loose = /(\d+)\s*h/i.exec(label);
+  return loose ? Number(loose[1]) : null;
+}
+
+function hoursFromOrderItems(items?: { durationLabel?: string }[] | null): number | null {
+  if (!items?.length) return null;
+  let max: number | null = null;
+  for (const item of items) {
+    const h = hoursFromDurationLabel(item.durationLabel);
+    if (h != null) max = max == null ? h : Math.max(max, h);
+  }
+  return max;
+}
+
+/**
+ * One rider/ops line for a slot — never shows "25h late" once the booked window
+ * has ended (use overdue from the end instead).
+ */
+export function formatSlotStatus(slot: DeliverySlot, opts?: { withWindow?: boolean }): string {
+  const tail = opts?.withWindow ? ` · ${slot.window}` : '';
+  if (slot.state === 'upcoming') {
+    return `Delivery slot ${slot.window}${slot.hours ? ` · ${slot.hours}h` : ''} · clock starts at handover`;
+  }
+  // Prefer overdue whenever the window is gone — even if state was forced closed
+  // via expiredAt with a readable end.
+  if (slot.state === 'closed' || slot.overdueMinutes > 0) {
+    return `Window closed ${formatLate(slot.overdueMinutes)} ago${tail}`;
+  }
+  return `Delivery slot ${slot.startLabel} · ${formatLate(slot.lateMinutes)} late · clock starts at handover`;
+}
+
 /**
  * How a booking's *delivery slot* stands right now — the honest label the rider
  * portal shows instead of a bare "Starts Today, 11:13 AM", which reads as future
  * even when the slot is hours gone.
+ *
+ * Prefers `bookedStartAt` / `bookedEndAt` when present (original appointment), so
+ * a slid runtime clock after handover never rewrites the late/closed math.
  */
 export function deliverySlot(
-  order: { startAt?: string; endAt?: string; expiredAt?: string | null } | null | undefined,
+  order: {
+    startAt?: string;
+    endAt?: string;
+    bookedStartAt?: string;
+    bookedEndAt?: string;
+    expiredAt?: string | null;
+    items?: { durationLabel?: string }[];
+  } | null | undefined,
   now = new Date()
 ): DeliverySlot | null {
-  if (!order?.startAt) return null;
-  const start = new Date(order.startAt);
-  if (Number.isNaN(start.getTime())) return null;
+  const startIso = order?.bookedStartAt || order?.startAt;
+  if (!startIso) return null;
+  const start = parseInstant(startIso);
+  if (!start) return null;
 
-  const end = order.endAt ? new Date(order.endAt) : null;
-  const hasEnd = end != null && !Number.isNaN(end.getTime());
-  const hours = hasEnd ? Math.round((end!.getTime() - start.getTime()) / 3_600_000) : null;
-  const startLabel = formatSlot(order.startAt, now);
-  const endLabel = hasEnd ? formatSlot(order.endAt as string, now) : null;
+  // Original booked end first; fall back to runtime endAt; last resort infer from
+  // the line-item duration so a missing endAt can't strand us on "25h late".
+  let end = parseInstant(order?.bookedEndAt || order?.endAt);
+  const inferredHours = hoursFromOrderItems(order?.items);
+  if (!end && inferredHours != null && inferredHours > 0) {
+    end = new Date(start.getTime() + inferredHours * 3_600_000);
+  }
+
+  const hasEnd = end != null;
+  const hours = hasEnd
+    ? Math.round((end!.getTime() - start.getTime()) / 3_600_000)
+    : inferredHours;
+  const startLabel = formatSlot(startIso, now);
+  const endLabel = hasEnd ? formatSlot(end!.toISOString(), now) : null;
 
   const nowMs = now.getTime();
   const windowLabel = endLabel ? `${startLabel} – ${endLabel}` : startLabel;
@@ -334,15 +396,20 @@ export function deliverySlot(
   // A 24h rental booked yesterday reads as "25h late" by the time its window closes,
   // which is technically true but useless: what ops and the rider need then is how long
   // the *booked window* has been gone, not how long since it started.
-  const overdueMinutes = hasEnd
-    ? Math.max(0, Math.round((nowMs - end!.getTime()) / 60_000))
-    : 0;
+  let overdueMinutes = hasEnd ? Math.max(0, Math.round((nowMs - end!.getTime()) / 60_000)) : 0;
 
-  const state: DeliverySlotState = order.expiredAt
+  // If we still have no end but lateness already exceeds a known rental length,
+  // treat the surplus as "window closed X ago" instead of "25h late".
+  if (!hasEnd && hours != null && hours > 0 && lateMinutes > hours * 60) {
+    overdueMinutes = lateMinutes - hours * 60;
+  }
+
+  const windowEnded = overdueMinutes > 0;
+  const state: DeliverySlotState = order?.expiredAt
     ? 'closed'
     : nowMs < start.getTime()
       ? 'upcoming'
-      : hasEnd && nowMs > end!.getTime()
+      : windowEnded
         ? 'closed'
         : 'late';
 
