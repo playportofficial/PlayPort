@@ -34,4 +34,12 @@ describe('isInServiceArea (15 km of the Kachiguda hub)', () => {
     expect(isDropoffInServiceArea({ lat: 17.4486, lng: 78.3908 })).toBe(true);
     expect(isDropoffInServiceArea({ lat: 17.4401, lng: 78.3489 })).toBe(false);
   });
+
+  it('excludes ECIL even though it sits inside the 15 km radius', () => {
+    expect(isInServiceArea({ lat: 17.4699, lng: 78.5738 })).toBe(false);
+    expect(isInServiceArea({ area: 'ECIL', city: 'Hyderabad', pincode: '500062' })).toBe(false);
+    expect(isInServiceArea({ pincode: '500062' })).toBe(false);
+    expect(isDropoffInServiceArea({ lat: 17.4699, lng: 78.5738 })).toBe(false);
+    expect(isDropoffInServiceArea({ addressFull: 'ECIL X Roads, Hyderabad 500062' })).toBe(false);
+  });
 });
