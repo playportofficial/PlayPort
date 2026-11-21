@@ -133,8 +133,8 @@ export function ScheduleCalendar({ now, selectedIso, onSelect, hours, notBefore 
           </View>
           {slots.some((slot) => !rentalEndsInServiceHours(slot, hours)) ? (
             <Text style={styles.slotsNote}>
-              Greyed-out times would end your {hours}h rental after midnight. We pick up between 8 AM and
-              midnight, so choose an earlier start or a longer plan.
+              Greyed-out times don’t fit a {hours}h rental. We’re open 6 AM – midnight; after 6 PM only up
+              to 6h packages are available.
             </Text>
           ) : null}
         </>

@@ -597,9 +597,30 @@ async function resolveHubId(requested?: string, userId?: string): Promise<string
   return active.docs[0].id;
 }
 
-/** Pickups run 8 AM – midnight IST, so a rental must end between 8:00 AM and 11:59 PM. */
+const SERVICE_OPEN_HOUR_IST = 6;
+const SERVICE_CLOSE_HOUR_IST = 24;
+const NIGHT_START_HOUR_IST = 18;
+const NIGHT_MAX_HOURS = 6;
+
+function istHourFromMs(ms: number): number {
+  return new Date(ms + 5.5 * 60 * 60 * 1000).getUTCHours();
+}
+
+/**
+ * Pickup rules (IST), mirrored from utils/serviceHours:
+ * - Daytime starts: end must land in service hours (6 AM – midnight).
+ * - Night starts (6 PM+): only packages ≤ 6h (overnight end before 6 AM is OK).
+ */
+function rentalWindowAllowed(startMs: number, hours: number): boolean {
+  if (!Number.isFinite(hours) || hours <= 0) return false;
+  const startH = istHourFromMs(startMs);
+  if (startH >= NIGHT_START_HOUR_IST) return hours <= NIGHT_MAX_HOURS;
+  return istHourFromMs(startMs + hours * 60 * 60 * 1000) >= SERVICE_OPEN_HOUR_IST;
+}
+
+/** @deprecated Prefer rentalWindowAllowed(start, hours). Kept for extension end checks. */
 function endsInServiceHours(endMs: number): boolean {
-  return new Date(endMs + 5.5 * 60 * 60 * 1000).getUTCHours() >= 8;
+  return istHourFromMs(endMs) >= SERVICE_OPEN_HOUR_IST;
 }
 
 /** Pre-book products: availableFrom "YYYY-MM-DD" = 12:00 AM IST that day. Mirrors utils/serviceHours launchStart. */
@@ -998,8 +1019,7 @@ export const createBooking = onCall({ region: REGION }, async (request) => {
   if (Number.isNaN(startAt.getTime())) {
     throw new HttpsError('invalid-argument', 'Invalid startAt');
   }
-  // Service hours (IST): dropoffs run 8 AM – midnight. Scheduled starts must
-  // land inside the window; the session itself may run overnight (e.g. 4 PM – 4 AM).
+  // Service hours (IST): dropoffs run 6 AM – midnight. After 6 PM only ≤6h packages.
   if (startAt.getTime() < now - 5 * 60 * 1000) {
     throw new HttpsError('invalid-argument', 'That slot already passed — pick a new time');
   }
@@ -1013,11 +1033,11 @@ export const createBooking = onCall({ region: REGION }, async (request) => {
       'Cash on delivery is only for ASAP orders. Pay online to schedule a later slot.'
     );
   }
-  const startIstHour = new Date(startAt.getTime() + 5.5 * 60 * 60 * 1000).getUTCHours();
-  if (startIstHour < 8 || startIstHour >= 24) {
+  const startIstHour = istHourFromMs(startAt.getTime());
+  if (startIstHour < SERVICE_OPEN_HOUR_IST || startIstHour >= SERVICE_CLOSE_HOUR_IST) {
     throw new HttpsError(
       'failed-precondition',
-      'We’re closed 12–8 AM. Schedule your dropoff from 8 AM onwards.'
+      'We’re closed 12–6 AM. Schedule your dropoff from 6 AM onwards.'
     );
   }
 
@@ -1143,10 +1163,12 @@ export const createBooking = onCall({ region: REGION }, async (request) => {
 
   const maxHours = Math.max(...cart.map((c) => cartItemHours(c)));
   const endAt = new Date(startAt.getTime() + maxHours * 60 * 60 * 1000);
-  if (!endsInServiceHours(endAt.getTime())) {
+  if (!rentalWindowAllowed(startAt.getTime(), maxHours)) {
     throw new HttpsError(
       'failed-precondition',
-      `This ${maxHours}h rental would end after midnight, when we can’t pick up. Pick an earlier start or a longer plan.`
+      startIstHour >= NIGHT_START_HOUR_IST
+        ? `After 6 PM you can only book up to ${NIGHT_MAX_HOURS}h. Pick a shorter plan or an earlier slot.`
+        : `This ${maxHours}h rental isn’t available for that start. Pick an earlier slot or a plan up to ${NIGHT_MAX_HOURS}h after 6 PM.`
     );
   }
   const startMs = startAt.getTime();
@@ -2571,10 +2593,13 @@ async function computeExtensionQuote(orderId: string, extraHours: number) {
   const oldEndMs = new Date(order.endAt).getTime();
   if (Number.isNaN(oldEndMs)) throw new HttpsError('failed-precondition', 'Invalid order end time');
   const newEndMs = oldEndMs + extraHours * 60 * 60 * 1000;
-  if (!endsInServiceHours(newEndMs)) {
+  // Extension "starts" at the current end — same night/day window rules as a new booking.
+  if (!rentalWindowAllowed(oldEndMs, extraHours)) {
     throw new HttpsError(
       'failed-precondition',
-      'That extension would end after midnight, when we can’t pick up. Try fewer hours, or enough to reach 8 AM.'
+      istHourFromMs(oldEndMs) >= NIGHT_START_HOUR_IST
+        ? `After 6 PM you can only extend by up to ${NIGHT_MAX_HOURS}h.`
+        : 'That extension would end after midnight, when we can’t pick up. Try fewer hours, or enough to reach 6 AM.'
     );
   }
   const newEndIso = new Date(newEndMs).toISOString();

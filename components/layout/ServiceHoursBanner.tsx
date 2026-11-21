@@ -5,7 +5,7 @@ import { colors, fonts, radii, spacing, typeScale } from '@/constants/theme';
 import { formatSlot, isServiceOpen, nextOpenStart } from '@/utils/serviceHours';
 
 /**
- * Night mode (12–8 AM IST): we don't dispatch, but scheduling stays open.
+ * Night mode (12–6 AM IST): we don't dispatch, but scheduling stays open.
  * Renders nothing during service hours.
  */
 export function ServiceHoursBanner() {
@@ -17,7 +17,7 @@ export function ServiceHoursBanner() {
     <View style={styles.banner}>
       <Ionicons name="moon-outline" size={18} color={colors.secondaryText} />
       <View style={{ flex: 1 }}>
-        <Text style={styles.title}>We’re resting 12–8 AM</Text>
+        <Text style={styles.title}>We’re resting 12–6 AM</Text>
         <Text style={styles.sub}>
           No late-night dropoffs — but you can schedule ahead from {formatSlot(opens.toISOString(), now)}.
         </Text>

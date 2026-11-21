@@ -199,8 +199,8 @@ export default function CheckoutScreen() {
                   </Text>
                 ) : (
                   <Text style={styles.timingWarn}>
-                    Too late for a {maxHours}h rental now — it would end after midnight, when we can’t pick
-                    up. Go back to the cart to schedule it or choose a longer plan.
+                    Too late for a {maxHours}h rental now — after 6 PM you can only book up to 6h. Go back to
+                    the cart to schedule earlier or pick a shorter plan.
                   </Text>
                 )}
               </View>

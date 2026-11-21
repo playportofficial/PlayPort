@@ -203,12 +203,12 @@ export function AvailabilityBlock({ items, hubId, startIso, onApplySlot, notBefo
           <IoniconsIcon name="moon-outline" size={20} color={colors.secondaryText} />
           <View style={{ flex: 1 }}>
             <Text style={styles.soldTitle}>
-              {isServiceOpen(new Date()) ? 'Too late for ASAP on this plan.' : 'We’re closed 12–8 AM.'}
+              {isServiceOpen(new Date()) ? 'Too late for ASAP on this plan.' : 'We’re closed 12–6 AM.'}
             </Text>
             <Text style={styles.soldSub}>
               {isServiceOpen(new Date())
-                ? 'It would end after midnight, when we can’t pick up. Schedule a slot or pick a longer plan.'
-                : 'ASAP resumes at 8 AM — or schedule a slot ahead.'}
+                ? 'After 6 PM you can only book up to 6h. Schedule earlier or pick a shorter plan.'
+                : 'ASAP resumes at 6 AM — or schedule a slot ahead.'}
             </Text>
           </View>
         </View>

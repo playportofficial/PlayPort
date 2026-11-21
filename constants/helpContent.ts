@@ -25,7 +25,7 @@ export const HELP_TOPICS = [
 export const FAQS = [
   {
     q: 'How fast is delivery?',
-    a: 'We deliver within 15 km of our Kachiguda hub, usually in about 30–45 minutes after payment confirms. Delivery times are estimates, not guarantees.',
+    a: 'We deliver within 15 km of our Kachiguda hub (6 AM – midnight IST). After 6 PM you can book up to 6 hours. Delivery times are estimates, not guarantees.',
   },
   {
     q: 'Do I need a deposit or ID?',

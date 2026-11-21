@@ -91,11 +91,11 @@ export function SchedulePicker({ maxHours, notBefore }: Props) {
           Pre-booking — rentals start from {formatLaunchDay(notBefore)}. Pick your day and time.
         </Text>
       ) : !open ? (
-        <Text style={styles.scheduleSub}>Closed 12–8 AM — pick a slot from 8 AM onwards.</Text>
+        <Text style={styles.scheduleSub}>Closed 12–6 AM — pick a slot from 6 AM onwards. After 6 PM, max 6h.</Text>
       ) : !asapOk ? (
         <Text style={styles.scheduleSub}>
-          Too late for a {maxHours}h rental now — it would end after midnight. Schedule it, or pick a longer
-          plan.
+          Too late for a {maxHours}h rental now — after 6 PM you can only book up to 6h. Schedule earlier, or
+          pick a shorter plan.
         </Text>
       ) : null}
 
@@ -122,8 +122,8 @@ export function SchedulePicker({ maxHours, notBefore }: Props) {
             </Text>
           ) : startTooLate ? (
             <Text style={styles.scheduleWarn}>
-              That start would end your {maxHours}h rental after midnight — pick an earlier time or a longer
-              plan.
+              That start isn’t available for a {maxHours}h rental — after 6 PM pick up to 6h, or choose an
+              earlier slot.
             </Text>
           ) : (
             <Text style={styles.scheduleSub}>
@@ -135,7 +135,7 @@ export function SchedulePicker({ maxHours, notBefore }: Props) {
         <Text style={styles.scheduleSub}>
           {open
             ? `Arrives in about 45 min · your ${maxHours}h starts when the kit is delivered.`
-            : 'ASAP resumes at 8 AM.'}
+            : 'ASAP resumes at 6 AM.'}
         </Text>
       )}
     </View>

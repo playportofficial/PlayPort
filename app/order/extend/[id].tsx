@@ -229,7 +229,7 @@ export default function ExtendOrderScreen() {
         </View>
         {order.endAt && OPTIONS.some((h) => !rentalEndsInServiceHours(new Date(order.endAt!), h)) ? (
           <Text style={styles.sectionSub}>
-            Greyed-out options would end after midnight, when we can’t pick up.
+            Greyed-out options aren’t available — after 6 PM extensions are capped at 6h.
           </Text>
         ) : null}
 

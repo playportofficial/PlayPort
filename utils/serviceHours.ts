@@ -1,7 +1,11 @@
-/** Service-hours + scheduling rules (IST). Open 8 AM – midnight, closed 12–8 AM. */
+/** Service-hours + scheduling rules (IST). Open 6 AM – midnight, closed 12–6 AM. */
 
-export const SERVICE_OPEN_HOUR = 8;
+export const SERVICE_OPEN_HOUR = 6;
 export const SERVICE_CLOSE_HOUR = 24; // midnight
+/** From this IST hour onward, only packages up to NIGHT_MAX_HOURS are bookable. */
+export const NIGHT_START_HOUR = 18; // 6 PM
+/** Night bookings are capped at 6h (no 12h/24h overnight loopholes). */
+export const NIGHT_MAX_HOURS = 6;
 export const SCHEDULE_LEAD_MINUTES = 45;
 export const MAX_ADVANCE_DAYS = 30;
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
@@ -15,7 +19,7 @@ export function istHour(date: Date): number {
   return istDate(date).getUTCHours();
 }
 
-/** True when dropoffs are running right now (8:00 AM – 12:00 AM IST). */
+/** True when dropoffs are running right now (6:00 AM – 12:00 AM IST). */
 export function isServiceOpen(now = new Date()): boolean {
   const h = istHour(now);
   return h >= SERVICE_OPEN_HOUR && h < SERVICE_CLOSE_HOUR;
@@ -142,7 +146,7 @@ const timeFmt = new Intl.DateTimeFormat('en-IN', {
   hour12: true,
 });
 
-/** Hourly dropoff slots 8 AM – 11 PM IST for a day; today filters past + lead time. */
+/** Hourly dropoff slots 6 AM – 11 PM IST for a day; today filters past + lead time. */
 export function daySlots(dayStart: Date, now = new Date(), notBefore?: Date | null): Date[] {
   const slots: Date[] = [];
   const minStart = Math.max(now.getTime() + SCHEDULE_LEAD_MINUTES * 60 * 1000, notBefore?.getTime() ?? 0);
@@ -154,7 +158,7 @@ export function daySlots(dayStart: Date, now = new Date(), notBefore?: Date | nu
   return slots;
 }
 
-/** A scheduled start is valid when: in the future (+lead), inside 8 AM–12 AM IST, within MAX_ADVANCE_DAYS. */
+/** A scheduled start is valid when: in the future (+lead), inside 6 AM–12 AM IST, within MAX_ADVANCE_DAYS. */
 export function isValidScheduledStart(
   iso: string | null | undefined,
   now = new Date(),
@@ -174,10 +178,17 @@ export function isValidScheduledStart(
 }
 
 /**
- * Pickups run in service hours too, so a rental must end between 8:00 AM and
- * 11:59 PM IST — e.g. a 3h rental starts by 8 PM, an 11 PM start needs 12h.
+ * Pickup rules (IST):
+ * - Daytime starts (before 6 PM): rental must end in service hours (6 AM – midnight).
+ * - Night starts (6 PM onward): only packages up to 6h — overnight ending before
+ *   6 AM is fine; the rider picks up at open. No 12h/24h night bookings.
  */
 export function rentalEndsInServiceHours(start: Date, hours: number): boolean {
+  if (!Number.isFinite(hours) || hours <= 0) return false;
+  const startH = istHour(start);
+  if (startH >= NIGHT_START_HOUR) {
+    return hours <= NIGHT_MAX_HOURS;
+  }
   const end = istDate(new Date(start.getTime() + hours * 60 * 60 * 1000));
   return end.getUTCHours() >= SERVICE_OPEN_HOUR;
 }
@@ -229,13 +240,13 @@ function clockTime(date: Date): string {
   return istDate(date).getUTCMinutes() === 0 ? shortTimeFmt.format(date) : timeFmt.format(date);
 }
 
-/** Next opening time (8 AM IST) when currently closed. */
+/** Next opening time (6 AM IST) when currently closed. */
 export function nextOpenStart(now = new Date()): Date {
   const dayStart = istDayStart(now);
-  const eightAm = new Date(dayStart.getTime() + SERVICE_OPEN_HOUR * 60 * 60 * 1000);
-  return eightAm.getTime() > now.getTime()
-    ? eightAm
-    : new Date(eightAm.getTime() + 24 * 60 * 60 * 1000);
+  const openAt = new Date(dayStart.getTime() + SERVICE_OPEN_HOUR * 60 * 60 * 1000);
+  return openAt.getTime() > now.getTime()
+    ? openAt
+    : new Date(openAt.getTime() + 24 * 60 * 60 * 1000);
 }
 
 /** How early (before startAt) a job enters the rider pool. */

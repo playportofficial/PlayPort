@@ -818,7 +818,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     // Scheduled start wins when valid; otherwise ASAP. Closed nights force scheduling.
-    // Pickups run 8 AM – midnight too, so the whole window must end in service hours.
+    // Pickups run 6 AM – midnight; after 6 PM only ≤6h packages.
     const now = new Date();
     const hours = Math.max(1, ...cart.map((c) => c.hours ?? 3));
     const catalog = useCatalogStore.getState();
@@ -834,17 +834,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       return {
         ok: false,
         error: isValidScheduledStart(scheduledStartAt, now)
-          ? `That start would end your ${hours}h rental after midnight — pick an earlier time or a longer plan.`
+          ? `That start isn’t available for a ${hours}h rental — after 6 PM pick up to 6h, or choose an earlier slot.`
           : 'That slot passed — pick a new time.',
       };
     }
     if (!isServiceOpen(now) && !scheduledOk) {
-      return { ok: false, error: 'We’re closed 12–8 AM. Schedule for 8 AM onwards.' };
+      return { ok: false, error: 'We’re closed 12–6 AM. Schedule for 6 AM onwards.' };
     }
     if (!scheduledOk && !isAsapAvailable(now, hours)) {
       return {
         ok: false,
-        error: `Too late for a ${hours}h rental now — it would end after midnight. Schedule it or pick a longer plan.`,
+        error: `Too late for a ${hours}h rental now — after 6 PM you can only book up to 6h. Pick a shorter plan or schedule earlier.`,
       };
     }
     const startAt = scheduledOk

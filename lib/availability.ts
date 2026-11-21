@@ -89,7 +89,7 @@ function startOfNextDay8am(from: Date): Date {
 
 /**
  * Probes forward in same-duration steps for the first free window.
- * Rolls to 8 AM next day when the day is exhausted (max ~6 probes).
+ * Rolls to 6 AM next day when the day is exhausted (max ~6 probes).
  * Returns the free start ISO, or null when nothing frees up.
  */
 export async function findNextFreeSlot(

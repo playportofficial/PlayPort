@@ -19,12 +19,12 @@ import {
 // Fixed reference: Monday 2026-10-12. IST = UTC + 5:30.
 const T = (utc: string) => new Date(utc);
 
-describe('isServiceOpen (IST 8 AM – midnight)', () => {
-  it('is closed just before 8 AM IST', () => {
-    expect(isServiceOpen(T('2026-10-12T02:29:00Z'))).toBe(false); // 7:59 IST
+describe('isServiceOpen (IST 6 AM – midnight)', () => {
+  it('is closed just before 6 AM IST', () => {
+    expect(isServiceOpen(T('2026-10-12T00:29:00Z'))).toBe(false); // 5:59 IST
   });
-  it('opens exactly at 8 AM IST', () => {
-    expect(isServiceOpen(T('2026-10-12T02:30:00Z'))).toBe(true);
+  it('opens exactly at 6 AM IST', () => {
+    expect(isServiceOpen(T('2026-10-12T00:30:00Z'))).toBe(true);
   });
   it('is open mid-day and late evening', () => {
     expect(isServiceOpen(T('2026-10-12T06:30:00Z'))).toBe(true); // 12:00 IST
@@ -37,11 +37,11 @@ describe('isServiceOpen (IST 8 AM – midnight)', () => {
 });
 
 describe('daySlots', () => {
-  it('offers 16 hourly slots (8 AM – 11 PM) for a future day', () => {
+  it('offers 18 hourly slots (6 AM – 11 PM) for a future day', () => {
     const now = T('2026-10-12T06:00:00Z'); // 11:30 AM IST Monday
     const days = availableDays(now);
     const wed = days.find((d) => d.label !== 'Today' && d.label !== 'Tomorrow')!;
-    expect(daySlots(wed.date, now)).toHaveLength(16);
+    expect(daySlots(wed.date, now)).toHaveLength(18);
   });
   it('hides past + lead-time slots for today', () => {
     const now = T('2026-10-12T10:00:00Z'); // 3:30 PM IST
@@ -101,9 +101,9 @@ describe('formatting + next opening', () => {
       '3:59 pm – 6:59 pm'
     );
   });
-  it('nextOpenStart points at 8 AM (same day before, next day after)', () => {
-    expect(nextOpenStart(T('2026-10-12T20:00:00Z')).toISOString()).toBe('2026-10-13T02:30:00.000Z');
-    expect(nextOpenStart(T('2026-10-12T06:00:00Z')).toISOString()).toBe('2026-10-13T02:30:00.000Z');
+  it('nextOpenStart points at 6 AM (same day before, next day after)', () => {
+    expect(nextOpenStart(T('2026-10-12T20:00:00Z')).toISOString()).toBe('2026-10-13T00:30:00.000Z');
+    expect(nextOpenStart(T('2026-10-12T06:00:00Z')).toISOString()).toBe('2026-10-13T00:30:00.000Z');
   });
 });
 
@@ -126,7 +126,7 @@ describe('calendarMonths', () => {
     const now = T('2026-10-23T06:00:00Z');
     const nov2 = calendarMonths(now)[1].cells.find((c) => c?.day === 2)!;
     expect(availableDays(now).some((d) => d.key === nov2.key)).toBe(true);
-    expect(daySlots(nov2.date, now)).toHaveLength(16);
+    expect(daySlots(nov2.date, now)).toHaveLength(18);
   });
 });
 
@@ -153,28 +153,30 @@ describe('isDispatchable (rider pool gating, 60-min lead)', () => {
   });
 });
 
-describe('rentalEndsInServiceHours (pickup must land 8 AM – 11:59 PM IST)', () => {
+describe('rentalEndsInServiceHours (6 AM open · night capped at 6h)', () => {
   const ist = (h: number, m = 0) => new Date(Date.UTC(2026, 9, 31, h, m) - 5.5 * 3600 * 1000);
-  it('lets a 3h rental start by 8 PM but not later', () => {
-    expect(rentalEndsInServiceHours(ist(20), 3)).toBe(true); // 8 PM → 11 PM
-    expect(rentalEndsInServiceHours(ist(21), 3)).toBe(false); // 9 PM → midnight
-    expect(rentalEndsInServiceHours(ist(23), 3)).toBe(false); // 11 PM → 2 AM
+  it('daytime: pickup must land from 6 AM onward', () => {
+    expect(rentalEndsInServiceHours(ist(14), 3)).toBe(true); // 2 PM → 5 PM
+    expect(rentalEndsInServiceHours(ist(16), 12)).toBe(false); // 4 PM → 4 AM
+    expect(rentalEndsInServiceHours(ist(16), 24)).toBe(true); // 4 PM → 4 PM
   });
-  it('lets an 11 PM start through on plans that end after 8 AM', () => {
-    expect(rentalEndsInServiceHours(ist(23), 12)).toBe(true); // 11 PM → 11 AM
-    expect(rentalEndsInServiceHours(ist(23), 24)).toBe(true); // 11 PM → 11 PM
-    expect(rentalEndsInServiceHours(ist(23), 6)).toBe(false); // 11 PM → 5 AM
+  it('night (6 PM+): only packages up to 6h, including overnight ends', () => {
+    expect(rentalEndsInServiceHours(ist(20), 3)).toBe(true); // 8 PM → 11 PM
+    expect(rentalEndsInServiceHours(ist(20), 6)).toBe(true); // 8 PM → 2 AM
+    expect(rentalEndsInServiceHours(ist(23), 6)).toBe(true); // 11 PM → 5 AM
+    expect(rentalEndsInServiceHours(ist(23), 12)).toBe(false); // no 12h at night
+    expect(rentalEndsInServiceHours(ist(23), 24)).toBe(false);
   });
   it('folds into isValidScheduledStart when hours are given', () => {
     const now = ist(10);
     expect(isValidScheduledStart(ist(23).toISOString(), now)).toBe(true);
-    expect(isValidScheduledStart(ist(23).toISOString(), now, 3)).toBe(false);
-    expect(isValidScheduledStart(ist(23).toISOString(), now, 12)).toBe(true);
+    expect(isValidScheduledStart(ist(23).toISOString(), now, 6)).toBe(true);
+    expect(isValidScheduledStart(ist(23).toISOString(), now, 12)).toBe(false);
   });
-  it('turns ASAP off late in the evening for short plans', () => {
+  it('ASAP at night allows ≤6h only', () => {
     expect(isAsapAvailable(ist(18), 3)).toBe(true); // 6:45 PM → 9:45 PM
-    expect(isAsapAvailable(ist(22), 3)).toBe(false); // 10:45 PM → 1:45 AM
-    expect(isAsapAvailable(ist(22), 12)).toBe(true); // → 10:45 AM
+    expect(isAsapAvailable(ist(22), 6)).toBe(true); // 10:45 PM → 4:45 AM
+    expect(isAsapAvailable(ist(22), 12)).toBe(false);
   });
 });
 
