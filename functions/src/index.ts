@@ -618,11 +618,6 @@ function rentalWindowAllowed(startMs: number, hours: number): boolean {
   return istHourFromMs(startMs + hours * 60 * 60 * 1000) >= SERVICE_OPEN_HOUR_IST;
 }
 
-/** @deprecated Prefer rentalWindowAllowed(start, hours). Kept for extension end checks. */
-function endsInServiceHours(endMs: number): boolean {
-  return istHourFromMs(endMs) >= SERVICE_OPEN_HOUR_IST;
-}
-
 /** Pre-book products: availableFrom "YYYY-MM-DD" = 12:00 AM IST that day. Mirrors utils/serviceHours launchStart. */
 function launchStartMs(availableFrom: unknown): number | null {
   if (typeof availableFrom !== 'string' || !availableFrom.trim()) return null;
